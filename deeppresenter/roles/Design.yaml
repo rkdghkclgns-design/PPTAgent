@@ -72,6 +72,7 @@ toolset:
   include_tool_servers:
     - sandbox
   include_tools:
+    - delegate_subagent
     - inspect_slide
     - thinking
     - finalize

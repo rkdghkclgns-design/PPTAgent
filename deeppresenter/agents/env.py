@@ -373,11 +373,22 @@ class AgentEnv:
         """Execute a locally registered tool and wrap the result."""
         func = self._local_tools[name]
         kwargs = arguments or {}
-        raw = (
-            await func(**kwargs)
-            if inspect.iscoroutinefunction(func)
-            else func(**kwargs)
-        )
+        try:
+            raw = (
+                await func(**kwargs)
+                if inspect.iscoroutinefunction(func)
+                else func(**kwargs)
+            )
+        except Exception as e:
+            return CallToolResult(
+                content=[
+                    TextContent(
+                        text=f"Tool `{name}` execution failed with error: {e}",
+                        type="text",
+                    )
+                ],
+                isError=True,
+            )
         return CallToolResult(
             content=[TextContent(text=str(raw), type="text")],
             isError=False,
