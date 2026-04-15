@@ -3,6 +3,7 @@ import time
 import uuid
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 import gradio as gr
 
@@ -151,7 +152,7 @@ class ChatDemo:
                             visible=False,
                         )
 
-                    def _toggle_template_visibility(v: str):
+                    def _toggle_template_visibility(v: str) -> dict:
                         return gr.update(visible=("模版" in v))
 
                     convert_type_dd.change(
@@ -241,6 +242,52 @@ class ChatDemo:
 
                 return "\n".join(token_lines) if total_all > 0 else "暂无 token 数据"
 
+            def format_chat_message(msg: ChatMessage) -> list[dict[str, Any]]:
+                parts: list[dict[str, Any]] = []
+                role_msg = f"{ROLE_EMOJI[msg.role]} **{str(msg.role).title()} Message**"
+
+                if msg.reasoning and msg.reasoning.strip():
+                    parts.append(
+                        {
+                            "role": "assistant",
+                            "content": msg.reasoning.strip(),
+                            "metadata": {
+                                "title": "🧠 Reasoning",
+                                "status": "done",
+                            },
+                        }
+                    )
+
+                if msg.text and msg.text.strip():
+                    if msg.role == Role.TOOL:
+                        content = "```json\n" + msg.text.replace("\\n", "\n") + "\n```"
+                    else:
+                        content = msg.text
+
+                    parts.append(
+                        {
+                            "role": "assistant",
+                            "content": f"{role_msg}\n\n{content}",
+                        }
+                    )
+
+                if msg.tool_calls:
+                    for tool_call in msg.tool_calls:
+                        tool_msg = f"{ROLE_EMOJI.get(msg.role, '💬')} **Tool Call: {tool_call.function.name}**"
+                        content_parts = [tool_msg]
+                        if hasattr(tool_call.function, "arguments"):
+                            args_str = tool_call.function.arguments
+                            args_msg = f"```json\n{args_str}\n```"
+                            content_parts.append(args_msg)
+                        parts.append(
+                            {
+                                "role": "assistant",
+                                "content": "\n\n".join(content_parts),
+                            }
+                        )
+
+                return parts
+
             async def send_message(
                 message,
                 history,
@@ -268,8 +315,10 @@ class ChatDemo:
                     {"role": "user", "content": message or "请根据上传的附件制作 PPT"}
                 )
 
-                aggregated_parts: list[str] = []
-                history.append({"role": "assistant", "content": ""})
+                response_messages: list[dict[str, Any]] = []
+
+                def build_history() -> list[dict[str, Any]]:
+                    return history + response_messages
 
                 loop = user_session.loop
 
@@ -291,14 +340,14 @@ class ChatDemo:
                 ):
                     if isinstance(yield_msg, (str, Path)):
                         file_content = "📄 幻灯片生成完成，点击下方按钮下载文件"
-                        aggregated_parts.append(file_content)
-                        aggregated_text = "\n\n".join(aggregated_parts).strip()
-                        history[-1]["content"] = aggregated_text
+                        response_messages.append(
+                            {"role": "assistant", "content": file_content}
+                        )
 
                         token_text = collect_token_stats(loop)
 
                         yield (
-                            history,
+                            build_history(),
                             "",
                             gr.update(value=None),
                             gr.update(value=str(yield_msg)),
@@ -306,37 +355,12 @@ class ChatDemo:
                         )
 
                     elif isinstance(yield_msg, ChatMessage):
-                        role_msg = f"{ROLE_EMOJI[yield_msg.role]} **{str(yield_msg.role).title()} Message**"
-                        if yield_msg.text:
-                            aggregated_parts.append(role_msg)
-
-                        if yield_msg.text is not None and yield_msg.text.strip():
-                            if yield_msg.role == Role.TOOL:
-                                aggregated_parts.append(
-                                    "```json\n"
-                                    + yield_msg.text.replace("\\n", "\n")
-                                    + "\n```"
-                                )
-                            else:
-                                aggregated_parts.append(yield_msg.text)
-
-                        if yield_msg.tool_calls:
-                            for tool_call in yield_msg.tool_calls:
-                                tool_msg = f"{ROLE_EMOJI.get(yield_msg.role, '💬')} **Tool Call: {tool_call.function.name}**"
-                                aggregated_parts.append(tool_msg)
-
-                                if hasattr(tool_call.function, "arguments"):
-                                    args_str = tool_call.function.arguments
-                                    args_msg = f"```json\n{args_str}\n```"
-                                    aggregated_parts.append(args_msg)
-
-                        aggregated_text = "\n\n".join(aggregated_parts).strip()
-                        history[-1]["content"] = aggregated_text
+                        response_messages.extend(format_chat_message(yield_msg))
 
                         token_text = collect_token_stats(loop)
 
                         yield (
-                            history,
+                            build_history(),
                             message,
                             gr.update(value=None),
                             gr.update(),
