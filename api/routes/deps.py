@@ -4,12 +4,13 @@ Contains:
 - `get_bridge`: returns the singleton AgentBridge attached to app.state.
 - `require_auth`: HTTP dependency that verifies a Supabase-issued JWT in the
   `Authorization: Bearer ...` header.
-- `require_auth_ws`: WebSocket variant that reads `?token=...` from the query
+- `require_auth_ws`: WebSocket variant reading `?token=...` from the query
   string because browsers can't set headers on native WebSockets.
 
-If `settings.auth_enabled` is false the auth dependencies fall through, which
-is useful for local development and the demo deployment. Production should
-always set AUTH_ENABLED=true.
+Verification modes (switched by `Settings.auth_enabled`):
+  * False              - no-op (dev only)
+  * True + JWKS ready  - full RS256/ES256 signature check via JwksVerifier
+  * True + JWKS down   - FAIL CLOSED; we never fall back to unsigned decode
 """
 
 from __future__ import annotations
@@ -17,11 +18,13 @@ from __future__ import annotations
 import base64
 import json
 import logging
+from functools import lru_cache
 from typing import Any
 
 from fastapi import Header, HTTPException, Request, WebSocket, status
 
 from ..core import AgentBridge
+from ..core.jwks import JwksVerifier
 from ..settings import get_settings
 
 logger = logging.getLogger("api.auth")
@@ -31,25 +34,42 @@ def get_bridge(request: Request) -> AgentBridge:
     return request.app.state.bridge
 
 
-def _decode_jwt_payload(token: str) -> dict[str, Any]:
-    """Decode a JWT's payload WITHOUT verifying the signature.
+@lru_cache(maxsize=1)
+def _get_verifier() -> JwksVerifier | None:
+    settings = get_settings()
+    if not settings.supabase_url:
+        return None
+    return JwksVerifier(settings.supabase_url)
 
-    Signature verification is delegated to Supabase's GoTrue server when we
-    want strict checks (out of scope here because we'd need the JWKS). For
-    now we treat the token as opaque proof-of-login and just make sure it
-    parses and isn't expired. This prevents casual anonymous abuse while
-    staying easy to operate without a public key endpoint.
-    """
+
+def _decode_payload_unverified(token: str) -> dict[str, Any]:
+    """Parse JUST the payload - used only for logging the `sub` on failures."""
     try:
         _, payload_b64, _ = token.split(".")
-        # base64url decode with missing padding forgiving
         padding = "=" * (-len(payload_b64) % 4)
-        payload_bytes = base64.urlsafe_b64decode(payload_b64 + padding)
-        return json.loads(payload_bytes)
-    except Exception as exc:  # noqa: BLE001
+        return json.loads(base64.urlsafe_b64decode(payload_b64 + padding))
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+async def _verify(token: str) -> dict[str, Any]:
+    settings = get_settings()
+    verifier = _get_verifier()
+    if verifier is None:
+        # JWKS URL not configured -> fail closed, don't silently accept.
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="auth not configured on server",
+        )
+    issuer = f"{settings.supabase_url.rstrip('/')}/auth/v1"
+    try:
+        return await verifier.verify(token, expected_issuer=issuer)
+    except ValueError as exc:
+        preview = _decode_payload_unverified(token).get("sub", "-")
+        logger.info("jwt rejected for sub=%s: %s", preview, exc)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="malformed JWT",
+            detail=str(exc),
         ) from exc
 
 
@@ -66,29 +86,10 @@ async def require_auth(
             detail="missing bearer token",
         )
     token = authorization.split(None, 1)[1]
-    payload = _decode_jwt_payload(token)
-
-    # Exp check
-    import time as _t
-    exp = payload.get("exp")
-    if isinstance(exp, (int, float)) and exp < _t.time():
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="token expired",
-        )
-
-    # Issuer sanity check - we only trust tokens minted by our own project.
-    iss = payload.get("iss") or ""
-    if settings.supabase_url and settings.supabase_url not in iss:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="token issuer mismatch",
-        )
-    return payload
+    return await _verify(token)
 
 
 async def require_auth_ws(websocket: WebSocket) -> bool:
-    """Return True if the WebSocket caller is authenticated."""
     settings = get_settings()
     if not settings.auth_enabled:
         return True
@@ -96,7 +97,7 @@ async def require_auth_ws(websocket: WebSocket) -> bool:
     if not token:
         return False
     try:
-        _decode_jwt_payload(token)
+        await _verify(token)
         return True
     except HTTPException:
         return False
