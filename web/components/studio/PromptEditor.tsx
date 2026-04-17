@@ -36,7 +36,18 @@ export function PromptEditor() {
 
   const onDrop = useCallback(
     async (files: File[]) => {
+      const apiOk = await isApiReachable();
       for (const file of files) {
+        if (!apiOk) {
+          // Demo mode: record the attachment client-side only. The real
+          // upload needs FastAPI + Supabase Storage, which aren't online yet.
+          addAttachment({
+            name: file.name,
+            objectPath: `demo/${file.name}`,
+            size: file.size,
+          });
+          continue;
+        }
         try {
           const result = await uploadAttachment(file);
           addAttachment({
@@ -48,6 +59,11 @@ export function PromptEditor() {
           toast.error(`업로드 실패: ${file.name}`);
           console.error(err);
         }
+      }
+      if (!apiOk && files.length > 0) {
+        toast.message("데모 모드 · 첨부 파일은 기록만 됩니다", {
+          description: "실제 파싱은 FastAPI 가 연결된 뒤 수행됩니다.",
+        });
       }
     },
     [addAttachment],
