@@ -39,6 +39,8 @@ export function PromptEditor() {
   const setIncludeImages = useStudioStore((s) => s.setIncludeImages);
   const language = useStudioStore((s) => s.language);
   const setLanguage = useStudioStore((s) => s.setLanguage);
+  const deckType = useStudioStore((s) => s.deckType);
+  const setDeckType = useStudioStore((s) => s.setDeckType);
   const overrides = useStudioStore((s) => s.overrides);
   const attachments = useStudioStore((s) => s.attachments);
   const addAttachment = useStudioStore((s) => s.addAttachment);
@@ -111,6 +113,7 @@ export function PromptEditor() {
         slideCount,
         includeImages,
         language,
+        deckType,
         models: overrides,
         attachments: attachments.map(({ id: _id, size: _size, ...payload }) => payload),
       });
@@ -328,6 +331,43 @@ export function PromptEditor() {
               ))}
             </div>
           </div>
+        </div>
+      </div>
+
+      {/* Deck type selector */}
+      <div className="glass rounded-2xl px-5 py-4">
+        <div className="mb-3 flex items-center justify-between">
+          <span className="text-xs font-semibold uppercase tracking-[0.2em] text-muted-foreground">
+            자료 유형
+          </span>
+          <span className="text-[10px] text-muted-foreground">
+            슬라이드 구조를 결정합니다
+          </span>
+        </div>
+        <div className="grid grid-cols-5 gap-1.5">
+          {(
+            [
+              { id: "lecture", label: "강의", hint: "표지·학습목표·본문·요약·Q&A" },
+              { id: "pitch", label: "피치", hint: "문제·해결·시장·모델·팀" },
+              { id: "report", label: "보고서", hint: "개요·분석·권고·부록" },
+              { id: "analysis", label: "분석", hint: "데이터·인사이트·옵션·권고" },
+              { id: "generic", label: "일반", hint: "기본 구조" },
+            ] as const
+          ).map((opt) => (
+            <button
+              key={opt.id}
+              onClick={() => setDeckType(opt.id)}
+              title={opt.hint}
+              className={cn(
+                "rounded-xl border px-3 py-2.5 text-xs font-medium transition",
+                deckType === opt.id
+                  ? "border-electron bg-electron/10 text-foreground shadow-halo"
+                  : "border-border/60 bg-muted/40 text-muted-foreground hover:border-electron/40 hover:text-foreground",
+              )}
+            >
+              {opt.label}
+            </button>
+          ))}
         </div>
       </div>
 

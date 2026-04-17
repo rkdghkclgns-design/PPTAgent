@@ -17,6 +17,8 @@ const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL ?? "";
 const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? "";
 
 export type ModelOverrides = Partial<Record<ModelSlot, string>>;
+export type DeckType = "lecture" | "pitch" | "report" | "analysis" | "generic";
+export type SlideKind = "cover" | "objectives" | "content" | "summary" | "qna";
 
 /** Shape the Edge Function expects on the wire. */
 export interface AttachmentPayload {
@@ -28,23 +30,34 @@ export interface AttachmentPayload {
   image_b64?: string;
 }
 
+export interface SourceRef {
+  label: string;
+  url?: string;
+}
+
 export interface GenerateRequest {
   prompt: string;
   slideCount: number;
   includeImages: boolean;
   language?: "ko" | "en";
+  deckType?: DeckType;
   models?: ModelOverrides;
   attachments?: AttachmentPayload[];
 }
 
 export interface SlideData {
   index: number;
+  kind: SlideKind;
   title: string;
   bullets: string[];
   notes?: string;
   imagePrompt?: string;
   /** Data URL ready for <img src=...> when present. */
   imageUrl?: string;
+  /** Mermaid source for a flowchart / sequence diagram. */
+  diagram?: string;
+  /** Citations attached to this slide. */
+  sources?: SourceRef[];
 }
 
 export type GenerateProvider = "google" | "anthropic" | "sample";
@@ -54,8 +67,11 @@ export interface GenerateResult {
   slides: SlideData[];
   /** Which backend actually produced the content. */
   provider: GenerateProvider;
+  /** Structural template the edge function used. */
+  deck_type?: DeckType;
   /** Human-readable note - most useful when provider === "sample" and we
-   *  need to surface the underlying API failure. */
+   *  need to surface the underlying API failure, or when Imagen fell back to
+   *  procedural covers. */
   note?: string;
   /** Back-compat alias. Older callers used sample_mode instead of provider. */
   sample_mode?: boolean;
@@ -96,6 +112,7 @@ export async function generateDeck(req: GenerateRequest): Promise<GenerateResult
       slide_count: req.slideCount,
       include_images: req.includeImages,
       language: req.language ?? "ko",
+      deck_type: req.deckType ?? "generic",
       chat_model: chatModel,
       image_model: imageModel,
       attachments: req.attachments ?? [],
@@ -116,17 +133,21 @@ export async function generateDeck(req: GenerateRequest): Promise<GenerateResult
     provider?: GenerateProvider;
     note?: string;
     sample_mode?: boolean;
+    deck_type?: DeckType;
     slides: Array<{
+      kind?: SlideKind;
       title: string;
       bullets: string[];
       notes?: string;
       imagePrompt?: string;
       imageB64?: string | null;
+      diagram?: string;
+      sources?: Array<{ label: string; url?: string }>;
     }>;
   };
 
-  // Anthropic returns SVG covers; Google returns PNG. Use a generic
-  // image/* data URL so the browser sniffs by content.
+  // Anthropic returns SVG covers; Google returns PNG. Detect by base64
+  // header so the browser gets the right content-type in the data URL.
   const slides: SlideData[] = json.slides.map((s, i) => {
     let url: string | undefined;
     if (s.imageB64) {
@@ -137,11 +158,14 @@ export async function generateDeck(req: GenerateRequest): Promise<GenerateResult
     }
     return {
       index: i,
+      kind: s.kind ?? (i === 0 ? "cover" : "content"),
       title: s.title,
       bullets: s.bullets ?? [],
       notes: s.notes,
       imagePrompt: s.imagePrompt,
       imageUrl: url,
+      diagram: s.diagram,
+      sources: s.sources?.filter((src) => src?.label),
     };
   });
 
@@ -150,6 +174,7 @@ export async function generateDeck(req: GenerateRequest): Promise<GenerateResult
     slide_count: json.slide_count,
     slides,
     provider,
+    deck_type: json.deck_type,
     note: json.note,
     sample_mode: provider === "sample",
   };

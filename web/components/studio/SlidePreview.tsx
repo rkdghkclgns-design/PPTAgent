@@ -2,14 +2,35 @@
 
 import { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { Download, Expand, ImageOff, Loader2, Maximize2, Radio, X } from "lucide-react";
+import {
+  Download,
+  Expand,
+  ImageOff,
+  Link2,
+  Loader2,
+  Maximize2,
+  MessageCircle,
+  Radio,
+  Sparkles,
+  Target,
+  X,
+} from "lucide-react";
 import { toast } from "sonner";
 
 import { MotionButton } from "@/components/common/MotionButton";
 import { useStudioStore } from "@/lib/store";
 import { downloadPptx } from "@/lib/pptx";
+import { renderMermaid, svgToDataUrl } from "@/lib/mermaid";
 import { cn } from "@/lib/utils";
-import type { SlideData } from "@/lib/api";
+import type { SlideData, SlideKind } from "@/lib/api";
+
+const KIND_STYLE: Record<SlideKind, { label: string; icon: React.ComponentType<any>; tint: string }> = {
+  cover: { label: "표지", icon: Sparkles, tint: "text-electron" },
+  objectives: { label: "학습 목표", icon: Target, tint: "text-aurora" },
+  content: { label: "본문", icon: Maximize2, tint: "text-muted-foreground" },
+  summary: { label: "정리", icon: Radio, tint: "text-sunrise" },
+  qna: { label: "질의응답", icon: MessageCircle, tint: "text-electron" },
+};
 
 export function SlidePreview() {
   const slides = useStudioStore((s) => s.slides);
@@ -19,7 +40,6 @@ export function SlidePreview() {
   const progress = useStudioStore((s) => s.progress);
   const error = useStudioStore((s) => s.error);
   const prompt = useStudioStore((s) => s.prompt);
-  const sampleMode = useStudioStore((s) => s.sampleMode);
   const provider = useStudioStore((s) => s.provider);
   const providerNote = useStudioStore((s) => s.providerNote);
 
@@ -76,7 +96,7 @@ export function SlidePreview() {
             <p className="font-semibold">샘플 모드</p>
             <p className="mt-1 text-sunrise/80">
               {providerNote ??
-                "Supabase 에 API 키가 구성되지 않아 샘플 슬라이드를 반환했습니다. 키 등록 후 자동으로 실제 AI 생성으로 전환됩니다."}
+                "Supabase 에 API 키가 구성되지 않아 샘플 슬라이드를 반환했습니다."}
             </p>
           </motion.div>
         )}
@@ -89,12 +109,21 @@ export function SlidePreview() {
             <p className="font-semibold">Anthropic Claude</p>
             <p className="mt-1 text-electron/80">
               {providerNote ??
-                "Claude 가 텍스트를 생성하고, 커버는 프로시저럴 그라디언트로 대체됐습니다. 실제 AI 이미지는 GOOGLE_API_KEY 를 등록해 주세요."}
+                "Claude 가 텍스트를 생성하고, 커버는 프로시저럴 그라디언트로 대체됐습니다."}
             </p>
           </motion.div>
         )}
+        {provider === "google" && providerNote && (
+          <motion.div
+            initial={{ opacity: 0, y: -4 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="rounded-2xl border border-sunrise/40 bg-sunrise/5 px-4 py-3 text-xs text-sunrise/90"
+          >
+            <p className="font-semibold">이미지 생성 안내</p>
+            <p className="mt-1 text-sunrise/80">{providerNote}</p>
+          </motion.div>
+        )}
 
-        {/* Large main slide */}
         <MainSlide
           slide={current}
           status={status}
@@ -103,20 +132,19 @@ export function SlidePreview() {
           onZoom={() => current && setZoomOpen(true)}
         />
 
-        {/* Slide index info */}
         {current && (
           <div className="flex items-center justify-between text-xs text-muted-foreground">
-            <span>
-              슬라이드 {active + 1} / {slides.length}
-            </span>
-            <span className="font-mono">{current.title.slice(0, 30)}</span>
+            <span>슬라이드 {active + 1} / {slides.length}</span>
+            <KindBadge kind={current.kind} />
           </div>
         )}
 
-        {/* Thumbnail strip */}
         <ThumbnailStrip slides={slides} active={active} onSelect={setActive} status={status} />
 
-        {/* Notes for the active slide */}
+        {current?.sources && current.sources.length > 0 && (
+          <SourcesList sources={current.sources} />
+        )}
+
         {current?.notes && (
           <div className="rounded-2xl border border-border/60 bg-ink-950/60 p-4">
             <p className="mb-2 text-[10px] font-semibold uppercase tracking-[0.22em] text-muted-foreground">
@@ -136,8 +164,48 @@ export function SlidePreview() {
   );
 }
 
+function KindBadge({ kind }: { kind: SlideKind }) {
+  const k = KIND_STYLE[kind] ?? KIND_STYLE.content;
+  const Icon = k.icon;
+  return (
+    <span className={cn("inline-flex items-center gap-1.5 rounded-full border border-border/60 bg-muted/40 px-2 py-0.5 font-medium", k.tint)}>
+      <Icon className="h-3 w-3" />
+      {k.label}
+    </span>
+  );
+}
+
+function SourcesList({ sources }: { sources: NonNullable<SlideData["sources"]> }) {
+  return (
+    <div className="rounded-2xl border border-aurora/30 bg-aurora/5 p-4">
+      <p className="mb-2 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.22em] text-aurora">
+        <Link2 className="h-3 w-3" /> 출처
+      </p>
+      <ul className="space-y-1 text-xs leading-relaxed text-foreground/85">
+        {sources.map((s, i) => (
+          <li key={i} className="flex gap-2">
+            <span className="text-aurora/70">[{i + 1}]</span>
+            {s.url ? (
+              <a
+                href={s.url}
+                target="_blank"
+                rel="noreferrer noopener"
+                className="break-all underline-offset-2 hover:underline"
+              >
+                {s.label}
+              </a>
+            ) : (
+              <span className="break-words">{s.label}</span>
+            )}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------------------
-// Main slide (enlarged)
+// Main slide
 // ---------------------------------------------------------------------------
 
 function MainSlide({
@@ -166,12 +234,11 @@ function MainSlide({
           />
         </div>
         <p className="text-xs text-muted-foreground">
-          내용과 이미지를 동시에 생성하고 있어요. 보통 20~60초 걸립니다.
+          내용·이미지·다이어그램을 동시에 생성 중입니다. 보통 30~90초 걸립니다.
         </p>
       </div>
     );
   }
-
   if (status === "failed") {
     return (
       <div className="glass flex aspect-video flex-col items-center justify-center gap-3 rounded-2xl border border-destructive/40 p-6 text-center">
@@ -183,7 +250,6 @@ function MainSlide({
       </div>
     );
   }
-
   if (!slide) {
     return (
       <div className="glass flex aspect-video flex-col items-center justify-center gap-3 rounded-2xl p-6 text-center text-muted-foreground">
@@ -194,7 +260,6 @@ function MainSlide({
       </div>
     );
   }
-
   return (
     <motion.button
       initial={{ opacity: 0, scale: 0.98 }}
@@ -213,7 +278,7 @@ function MainSlide({
 }
 
 // ---------------------------------------------------------------------------
-// Slide canvas (rendered layout - also used inside the zoom modal)
+// Kind-aware slide canvas
 // ---------------------------------------------------------------------------
 
 function SlideCanvas({
@@ -223,32 +288,113 @@ function SlideCanvas({
   slide: SlideData;
   scale: "preview" | "zoom";
 }) {
-  const padding = scale === "zoom" ? "p-10" : "p-5";
-  const titleSize = scale === "zoom" ? "text-4xl" : "text-xl";
+  const padding = scale === "zoom" ? "p-12" : "p-6";
+  const titleSize =
+    slide.kind === "cover"
+      ? scale === "zoom" ? "text-6xl" : "text-3xl"
+      : scale === "zoom" ? "text-4xl" : "text-xl";
   const bulletSize = scale === "zoom" ? "text-lg" : "text-[11px]";
   const accentHeight = scale === "zoom" ? "h-1.5" : "h-1";
   const accentWidth = scale === "zoom" ? "w-16" : "w-10";
-  const gap = scale === "zoom" ? "gap-10" : "gap-4";
 
+  // Cover layout: giant title centred, gradient image as background.
+  if (slide.kind === "cover") {
+    return (
+      <div className={cn("relative aspect-video w-full overflow-hidden bg-ink-900", padding)}>
+        {slide.imageUrl && (
+          <img
+            src={slide.imageUrl}
+            alt=""
+            className="absolute inset-0 h-full w-full object-cover opacity-60"
+          />
+        )}
+        <div className="absolute inset-0 bg-gradient-to-br from-ink-950/80 via-ink-900/40 to-ink-950/90" />
+        <div className="relative flex h-full flex-col justify-end">
+          <p className="text-xs uppercase tracking-[0.3em] text-electron/80">Cover</p>
+          <h3 className={cn("mt-2 font-display font-bold tracking-tight text-foreground", titleSize)}>
+            {slide.title}
+          </h3>
+          {slide.bullets?.length > 0 && (
+            <p className={cn("mt-4 text-foreground/80", scale === "zoom" ? "text-xl" : "text-sm")}>
+              {slide.bullets[0]}
+            </p>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // Objectives: checklist layout with mint accents.
+  if (slide.kind === "objectives") {
+    return (
+      <div className={cn("relative aspect-video w-full bg-ink-900", padding)}>
+        <p className="text-[10px] uppercase tracking-[0.3em] text-aurora">학습 목표</p>
+        <h3 className={cn("mt-1 font-display font-semibold tracking-tight text-foreground", titleSize)}>
+          {slide.title}
+        </h3>
+        <div className={cn("mt-3 rounded-full bg-aurora", accentHeight, accentWidth)} />
+        <ul className={cn("mt-6 space-y-3", bulletSize)}>
+          {slide.bullets.map((b, i) => (
+            <li key={i} className="flex items-start gap-3 text-foreground/90">
+              <span className="mt-[0.15em] flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-aurora/60 text-[10px] font-bold text-aurora">
+                {i + 1}
+              </span>
+              <span className="flex-1">{b}</span>
+            </li>
+          ))}
+        </ul>
+      </div>
+    );
+  }
+
+  // Summary: sunrise-tinted highlight cards.
+  if (slide.kind === "summary") {
+    return (
+      <div className={cn("relative aspect-video w-full bg-ink-900", padding)}>
+        <p className="text-[10px] uppercase tracking-[0.3em] text-sunrise">Summary</p>
+        <h3 className={cn("mt-1 font-display font-semibold tracking-tight text-foreground", titleSize)}>
+          {slide.title}
+        </h3>
+        <div className={cn("mt-3 rounded-full bg-sunrise", accentHeight, accentWidth)} />
+        <div className={cn("mt-5 grid gap-3", scale === "zoom" ? "grid-cols-2" : "grid-cols-1")}>
+          {slide.bullets.map((b, i) => (
+            <div
+              key={i}
+              className="rounded-xl border border-sunrise/30 bg-sunrise/5 p-3 text-foreground/90"
+            >
+              <p className={cn("font-medium", bulletSize)}>{b}</p>
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  // Q&A: minimal layout
+  if (slide.kind === "qna") {
+    return (
+      <div className={cn("relative flex aspect-video w-full flex-col items-center justify-center gap-4 bg-ink-900 text-center", padding)}>
+        <MessageCircle className={cn("text-electron", scale === "zoom" ? "h-14 w-14" : "h-7 w-7")} />
+        <h3 className={cn("font-display font-bold tracking-tight text-foreground", titleSize)}>
+          {slide.title}
+        </h3>
+        {slide.bullets?.[0] && (
+          <p className="max-w-[80%] text-muted-foreground">{slide.bullets[0]}</p>
+        )}
+      </div>
+    );
+  }
+
+  // Content (default): text on the left, diagram/image on the right.
   return (
     <div className={cn("relative aspect-video w-full bg-ink-900", padding)}>
-      <div className={cn("relative flex h-full", gap, slide.imageUrl ? "" : "")}>
+      <div className="relative flex h-full gap-5">
         <div className="flex min-w-0 flex-1 flex-col">
-          <h3
-            className={cn(
-              "font-display font-semibold tracking-tight text-foreground",
-              titleSize,
-            )}
-          >
+          <h3 className={cn("font-display font-semibold tracking-tight text-foreground", titleSize)}>
             {slide.title}
           </h3>
           <div className={cn("mt-3 rounded-full bg-electron", accentHeight, accentWidth)} />
-          <ul
-            className={cn(
-              "mt-4 space-y-1.5 text-foreground/85",
-              bulletSize,
-            )}
-          >
+          <ul className={cn("mt-4 space-y-1.5 text-foreground/85", bulletSize)}>
             {slide.bullets?.map((b, i) => (
               <li key={i} className="flex gap-2">
                 <span className="mt-[0.35em] h-1 w-1 shrink-0 rounded-full bg-aurora" />
@@ -257,13 +403,17 @@ function SlideCanvas({
             ))}
           </ul>
         </div>
-        {slide.imageUrl && (
+        {(slide.diagram || slide.imageUrl) && (
           <div className="relative hidden aspect-square w-[42%] shrink-0 overflow-hidden rounded-xl border border-border/40 md:block">
-            <img
-              src={slide.imageUrl}
-              alt={slide.imagePrompt ?? slide.title}
-              className="absolute inset-0 h-full w-full object-cover"
-            />
+            {slide.diagram ? (
+              <DiagramRenderer code={slide.diagram} />
+            ) : slide.imageUrl ? (
+              <img
+                src={slide.imageUrl}
+                alt={slide.imagePrompt ?? slide.title}
+                className="absolute inset-0 h-full w-full object-cover"
+              />
+            ) : null}
           </div>
         )}
       </div>
@@ -271,8 +421,34 @@ function SlideCanvas({
   );
 }
 
+function DiagramRenderer({ code }: { code: string }) {
+  const [svg, setSvg] = useState<string | null>(null);
+  useEffect(() => {
+    let alive = true;
+    renderMermaid(code, "preview").then((result) => {
+      if (alive) setSvg(result);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [code]);
+  if (!svg) {
+    return (
+      <div className="absolute inset-0 flex items-center justify-center p-3 text-[10px] text-muted-foreground">
+        다이어그램 렌더링 중...
+      </div>
+    );
+  }
+  return (
+    <div
+      className="absolute inset-0 flex items-center justify-center p-2 [&_svg]:h-full [&_svg]:w-full"
+      dangerouslySetInnerHTML={{ __html: svg }}
+    />
+  );
+}
+
 // ---------------------------------------------------------------------------
-// Thumbnail strip (2-row grid, scrolls for >8)
+// Thumbnail strip + zoom modal
 // ---------------------------------------------------------------------------
 
 function ThumbnailStrip({
@@ -297,6 +473,7 @@ function ThumbnailStrip({
             "group relative aspect-video overflow-hidden rounded-lg border border-border/60 bg-ink-900 transition",
             active === i && "border-electron ring-2 ring-electron/40",
           )}
+          title={s.title}
         >
           {s.imageUrl ? (
             <img src={s.imageUrl} alt="" className="absolute inset-0 h-full w-full object-cover" />
@@ -319,10 +496,6 @@ function ThumbnailStrip({
     </div>
   );
 }
-
-// ---------------------------------------------------------------------------
-// Zoom modal - click anywhere / Esc to close
-// ---------------------------------------------------------------------------
 
 function ZoomModal({
   slide,
@@ -361,12 +534,42 @@ function ZoomModal({
         >
           <X className="h-4 w-4" />
         </button>
-        {slide.notes && (
+        {(slide.notes || (slide.sources && slide.sources.length > 0)) && (
           <div className="border-t border-border/50 bg-ink-950/80 p-4">
-            <p className="mb-1 text-[10px] font-semibold uppercase tracking-[0.22em] text-muted-foreground">
-              Speaker Notes
-            </p>
-            <p className="text-sm text-foreground/85">{slide.notes}</p>
+            {slide.notes && (
+              <div>
+                <p className="mb-1 text-[10px] font-semibold uppercase tracking-[0.22em] text-muted-foreground">
+                  Speaker Notes
+                </p>
+                <p className="text-sm text-foreground/85">{slide.notes}</p>
+              </div>
+            )}
+            {slide.sources && slide.sources.length > 0 && (
+              <div className="mt-3 border-t border-border/40 pt-3">
+                <p className="mb-1 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.22em] text-aurora">
+                  <Link2 className="h-3 w-3" /> 출처
+                </p>
+                <ul className="space-y-0.5 text-xs text-foreground/80">
+                  {slide.sources.map((s, i) => (
+                    <li key={i}>
+                      <span className="text-aurora/70">[{i + 1}]</span>{" "}
+                      {s.url ? (
+                        <a
+                          href={s.url}
+                          target="_blank"
+                          rel="noreferrer noopener"
+                          className="break-all underline-offset-2 hover:underline"
+                        >
+                          {s.label}
+                        </a>
+                      ) : (
+                        s.label
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
           </div>
         )}
       </motion.div>

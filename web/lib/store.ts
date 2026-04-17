@@ -5,6 +5,7 @@ import { create } from "zustand";
 import { DEFAULT_MODELS, type ModelSlot } from "./models";
 import type {
   AttachmentPayload,
+  DeckType,
   GenerateProvider,
   ModelOverrides,
   SlideData,
@@ -24,6 +25,7 @@ interface StudioState {
   slideCount: number;
   includeImages: boolean;
   language: "ko" | "en";
+  deckType: DeckType;
   overrides: ModelOverrides;
   attachments: AttachmentEntry[];
 
@@ -41,6 +43,7 @@ interface StudioState {
   setSlideCount: (value: number) => void;
   setIncludeImages: (value: boolean) => void;
   setLanguage: (value: "ko" | "en") => void;
+  setDeckType: (value: DeckType) => void;
   setModel: (slot: ModelSlot, id: string) => void;
   addAttachment: (att: AttachmentEntry) => void;
   removeAttachment: (id: string) => void;
@@ -62,6 +65,7 @@ const initial = {
   slideCount: 8,
   includeImages: true,
   language: "ko" as const,
+  deckType: "generic" as DeckType,
   overrides: { ...DEFAULT_MODELS } as ModelOverrides,
   attachments: [] as AttachmentEntry[],
   status: "idle" as JobStatus,
@@ -82,6 +86,7 @@ export const useStudioStore = create<StudioState>((set) => ({
     set({ slideCount: Math.max(1, Math.min(100, Math.round(value))) }),
   setIncludeImages: (value) => set({ includeImages: value }),
   setLanguage: (value) => set({ language: value }),
+  setDeckType: (value) => set({ deckType: value }),
   setModel: (slot, id) =>
     set((s) => ({ overrides: { ...s.overrides, [slot]: id } })),
   addAttachment: (att) => set((s) => ({ attachments: [...s.attachments, att] })),
