@@ -1,0 +1,41 @@
+# Full-stack production compose.
+#
+#   docker compose -f deploy/docker-compose.prod.yml up -d
+#
+# Assumes: (a) deeppresenter-sandbox image is already present on the host,
+# (b) the .env file at repo root contains both api/ and web/ secrets.
+version: "3.9"
+
+services:
+  api:
+    build:
+      context: ..
+      dockerfile: api/Dockerfile
+    image: pptagent-api:latest
+    env_file: ../api/.env
+    environment:
+      CORS_ORIGINS: '["http://localhost:3000","https://pptagent.example.com"]'
+      WORKSPACE_BASE: /workspace
+    volumes:
+      - workspace:/workspace
+      - /var/run/docker.sock:/var/run/docker.sock
+    ports:
+      - "7870:7870"
+    restart: unless-stopped
+
+  web:
+    build:
+      context: ../web
+      dockerfile: Dockerfile
+    image: pptagent-web:latest
+    env_file: ../web/.env.local
+    environment:
+      NEXT_PUBLIC_API_ORIGIN: http://api:7870
+    depends_on:
+      - api
+    ports:
+      - "3000:3000"
+    restart: unless-stopped
+
+volumes:
+  workspace: {}

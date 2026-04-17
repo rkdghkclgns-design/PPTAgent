@@ -1,0 +1,30 @@
+# Supabase project config template.
+# Copy to supabase/.supabase/config.toml or link via `supabase link --project-ref <ref>`.
+project_id = "REPLACE_WITH_YOUR_PROJECT_REF"
+
+[api]
+enabled = true
+port = 54321
+schemas = ["public", "storage"]
+
+[storage]
+enabled = true
+file_size_limit = "200MiB"
+
+[storage.buckets.presentations]
+public = false
+file_size_limit = "200MiB"
+allowed_mime_types = [
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  "application/pdf",
+  "image/png",
+  "image/jpeg"
+]
+
+[edge_runtime]
+enabled = true
+policy = "oneshot"
+inspector_port = 8083
+
+[functions.llm-proxy]
+verify_jwt = true

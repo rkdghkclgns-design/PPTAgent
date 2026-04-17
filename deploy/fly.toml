@@ -1,0 +1,42 @@
+app = "pptagent-api"
+primary_region = "nrt"
+
+[build]
+  dockerfile = "api/Dockerfile"
+
+[env]
+  HOST = "0.0.0.0"
+  PORT = "7870"
+  WORKSPACE_BASE = "/data/workspace"
+
+[[mounts]]
+  source = "pptagent_data"
+  destination = "/data"
+
+[[services]]
+  internal_port = 7870
+  protocol = "tcp"
+  auto_stop_machines = true
+  auto_start_machines = true
+  min_machines_running = 0
+
+  [[services.ports]]
+    handlers = ["http"]
+    port = 80
+    force_https = true
+  [[services.ports]]
+    handlers = ["tls", "http"]
+    port = 443
+
+  [[services.http_checks]]
+    grace_period = "15s"
+    interval = "30s"
+    method = "get"
+    path = "/health"
+    protocol = "http"
+    timeout = "5s"
+
+[[vm]]
+  cpu_kind = "shared"
+  cpus = 2
+  memory_mb = 2048

@@ -1,0 +1,116 @@
+# CI for the web-integration layer we added on top of PPTAgent.
+#
+# Scope: only the api/, web/ and supabase/ folders. Upstream tests remain
+# untouched and keep running in their existing workflows.
+name: CI (web + api)
+
+on:
+  pull_request:
+    paths:
+      - "api/**"
+      - "web/**"
+      - "supabase/**"
+      - ".github/workflows/ci-web-api.yml"
+  push:
+    branches: [main]
+    paths:
+      - "api/**"
+      - "web/**"
+      - "supabase/**"
+      - ".github/workflows/ci-web-api.yml"
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  api-typecheck:
+    name: FastAPI · import + lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        run: curl -LsSf https://astral.sh/uv/install.sh | sh
+
+      - name: Install FastAPI wrapper deps (no playwright chromium)
+        shell: bash
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          uv venv .venv
+          source .venv/bin/activate
+          uv pip install -r api/requirements.txt ruff mypy
+
+      - name: Ruff lint
+        shell: bash
+        run: |
+          source .venv/bin/activate
+          ruff check api/ --target-version py312 --select E,F,W,I,UP
+
+      - name: Mypy (api/ only)
+        shell: bash
+        continue-on-error: true
+        run: |
+          source .venv/bin/activate
+          mypy api/ --ignore-missing-imports --python-version 3.12 || true
+
+      - name: Import smoke test
+        shell: bash
+        run: |
+          source .venv/bin/activate
+          python -c "
+          import importlib
+          for m in ['api.settings', 'api.schemas', 'api.routes.health', 'api.routes.models']:
+              importlib.import_module(m)
+              print('ok:', m)
+          "
+
+  web-typecheck:
+    name: Next.js · typecheck + build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: web/package.json
+
+      - name: Install
+        run: npm install --no-audit --no-fund
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build
+        env:
+          NEXT_PUBLIC_API_ORIGIN: http://ci.local
+          NEXT_PUBLIC_SUPABASE_URL: https://ci.supabase.co
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: ci-anon-key
+        run: npm run build
+
+  supabase-function-check:
+    name: Supabase · Deno check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: Deno format (check only)
+        working-directory: supabase/functions/llm-proxy
+        run: deno fmt --check
+
+      - name: Deno check types
+        working-directory: supabase/functions/llm-proxy
+        run: deno check index.ts
