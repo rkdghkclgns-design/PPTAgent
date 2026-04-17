@@ -75,6 +75,28 @@ function url(path: string): string {
   return `${origin}${path.startsWith("/") ? path : `/${path}`}`;
 }
 
+/**
+ * Ping /health with a short timeout. Returns true iff the FastAPI server is
+ * reachable and responds with a 2xx. Used by the Studio to decide whether to
+ * submit the real job or fall back to the demo stream.
+ */
+export async function isApiReachable(timeoutMs = 2500): Promise<boolean> {
+  if (!process.env.NEXT_PUBLIC_API_ORIGIN && typeof window !== "undefined") {
+    // On a static export without a configured origin, there's nothing to ping.
+    return false;
+  }
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const res = await fetch(url("/health"), { signal: ctrl.signal, cache: "no-store" });
+    return res.ok;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export async function fetchModels(): Promise<ModelCatalogResponse> {
   const res = await fetch(url("/models"), { cache: "no-store" });
   if (!res.ok) throw new Error(`models fetch failed: ${res.status}`);

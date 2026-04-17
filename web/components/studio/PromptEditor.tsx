@@ -9,7 +9,8 @@ import { toast } from "sonner";
 import { MotionButton } from "@/components/common/MotionButton";
 import { ModelSelector } from "@/components/studio/ModelSelector";
 import { useStudioStore } from "@/lib/store";
-import { createJob, streamEvents, uploadAttachment } from "@/lib/api";
+import { createJob, isApiReachable, streamEvents, uploadAttachment } from "@/lib/api";
+import { createDemoJob, runDemoJob } from "@/lib/demo";
 import { cn, formatBytes } from "@/lib/utils";
 
 const PROMPT_SUGGESTIONS = [
@@ -64,6 +65,32 @@ export function PromptEditor() {
       return;
     }
     setSubmitting(true);
+
+    // Probe the backend. If unreachable, run the demo event stream so the UI
+    // still tells a complete story (reviewers can evaluate the design without
+    // the FastAPI/Fly deployment being live).
+    const apiOk = await isApiReachable();
+
+    if (!apiOk) {
+      toast.message("데모 모드로 진행합니다", {
+        description: "FastAPI 백엔드가 아직 연결되지 않아 샘플 슬라이드로 시뮬레이션합니다.",
+      });
+      const demo = createDemoJob(prompt.trim());
+      setJob(demo);
+      try {
+        await runDemoJob({
+          prompt: prompt.trim(),
+          onEvent: (ev) => {
+            appendEvent(ev);
+            if (ev.stage === "done") toast.success("데모 스트림 완료");
+          },
+        });
+      } finally {
+        setSubmitting(false);
+      }
+      return;
+    }
+
     try {
       const created = await createJob({
         prompt: prompt.trim(),

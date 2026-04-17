@@ -3,6 +3,7 @@ import Link from "next/link";
 import { ArrowLeft, Sparkles } from "lucide-react";
 
 import { NoiseBackground } from "@/components/common/NoiseBackground";
+import { ConnectionBadge } from "@/components/studio/ConnectionBadge";
 import { PromptEditor } from "@/components/studio/PromptEditor";
 import { SlidePreview } from "@/components/studio/SlidePreview";
 import { StepRail } from "@/components/studio/StepRail";
@@ -33,8 +34,9 @@ export default function StudioPage() {
             Studio
           </div>
         </div>
-        <div className="hidden items-center gap-5 text-xs text-muted-foreground md:flex">
+        <div className="hidden items-center gap-3 text-xs text-muted-foreground md:flex">
           <span>Model routing · Google Imagen / Gemini via Supabase Edge</span>
+          <ConnectionBadge />
         </div>
       </header>
 
