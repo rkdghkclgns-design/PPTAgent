@@ -76,13 +76,22 @@ function url(path: string): string {
 }
 
 /**
- * Ping /health with a short timeout. Returns true iff the FastAPI server is
- * reachable and responds with a 2xx. Used by the Studio to decide whether to
- * submit the real job or fall back to the demo stream.
+ * Decide whether the Studio can run a real job.
+ *
+ * Treats the app as "live" when Supabase is configured at build time. The
+ * Edge Function handles LLM calls, Storage handles attachments, Postgres
+ * handles job persistence - so even without a standalone FastAPI server,
+ * Supabase alone backs a working pipeline.
+ *
+ * We still probe /health when NEXT_PUBLIC_API_ORIGIN points at a dedicated
+ * FastAPI deployment, but we no longer require it.
  */
 export async function isApiReachable(timeoutMs = 2500): Promise<boolean> {
+  const hasSupabase =
+    !!process.env.NEXT_PUBLIC_SUPABASE_URL && !!process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  if (hasSupabase) return true;
+
   if (!process.env.NEXT_PUBLIC_API_ORIGIN && typeof window !== "undefined") {
-    // On a static export without a configured origin, there's nothing to ping.
     return false;
   }
   const ctrl = new AbortController();

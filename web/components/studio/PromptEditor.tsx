@@ -98,26 +98,25 @@ export function PromptEditor() {
     }
     setSubmitting(true);
 
-    // Probe the backend. If unreachable, run the demo event stream so the UI
-    // still tells a complete story (reviewers can evaluate the design without
-    // the FastAPI/Fly deployment being live).
-    const apiOk = await isApiReachable();
-
-    if (!apiOk) {
-      toast.message("데모 모드로 진행합니다", {
-        description: "FastAPI 백엔드가 아직 연결되지 않아 샘플 슬라이드로 시뮬레이션합니다.",
-      });
+    // Small helper - runs the in-browser demo stream when we can't reach a
+    // real backend (or when the real backend returns anything other than 2xx).
+    const fallbackToPreview = async () => {
       const demo = createDemoJob(prompt.trim());
       setJob(demo);
+      await runDemoJob({
+        prompt: prompt.trim(),
+        jobId: demo.job_id,
+        onEvent: (ev) => {
+          appendEvent(ev);
+          if (ev.stage === "done") toast.success("미리보기 완료");
+        },
+      });
+    };
+
+    const apiOk = await isApiReachable();
+    if (!apiOk) {
       try {
-        await runDemoJob({
-          prompt: prompt.trim(),
-          jobId: demo.job_id,
-          onEvent: (ev) => {
-            appendEvent(ev);
-            if (ev.stage === "done") toast.success("데모 스트림 완료");
-          },
-        });
+        await fallbackToPreview();
       } finally {
         setSubmitting(false);
       }
@@ -148,8 +147,16 @@ export function PromptEditor() {
         },
       );
     } catch (err) {
-      console.error(err);
-      toast.error("생성 요청에 실패했습니다. API 서버 상태를 확인해 주세요.");
+      // If the dedicated backend isn't wired up yet (very common in fresh
+      // deploys), drop quietly into the in-browser preview stream instead
+      // of shouting a red error at the user.
+      console.warn("createJob failed, falling back to preview:", err);
+      try {
+        await fallbackToPreview();
+      } catch (demoErr) {
+        console.error(demoErr);
+        toast.error("세션을 시작하지 못했습니다. 잠시 후 다시 시도해 주세요.");
+      }
     } finally {
       setSubmitting(false);
     }

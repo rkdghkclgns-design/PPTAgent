@@ -2,26 +2,18 @@
 
 import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
-import { Cloud, CloudOff, Loader2 } from "lucide-react";
 
 import { isApiReachable } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 type Status = "checking" | "live" | "demo";
 
-const LABEL: Record<Status, string> = {
-  checking: "연결 확인 중",
-  live: "API 연결됨",
-  demo: "데모 모드",
-};
-
-const HINT: Record<Status, string> = {
-  checking: "헬스체크 중입니다.",
-  live: "FastAPI · Supabase · Google 모델이 모두 연결된 상태입니다.",
-  demo: "FastAPI 가 아직 배포되지 않아 샘플 데이터로 미리 보기 중입니다. " +
-    "NEXT_PUBLIC_API_ORIGIN 시크릿 등록 + 백엔드 배포 후 자동 전환됩니다.",
-};
-
+/**
+ * Minimal status pill. In the live state we show a calm green dot only,
+ * without the previous tooltip + warning copy - there's nothing for the user
+ * to do when everything works. In the demo state we collapse the badge to a
+ * small amber chip with a screen-reader-only explanation and no hover popup.
+ */
 export function ConnectionBadge() {
   const [status, setStatus] = useState<Status>("checking");
 
@@ -35,27 +27,41 @@ export function ConnectionBadge() {
     };
   }, []);
 
-  const Icon = status === "checking" ? Loader2 : status === "live" ? Cloud : CloudOff;
+  if (status === "checking") {
+    return (
+      <span className="hidden h-2 w-2 rounded-full bg-muted-foreground/40 md:inline-block"
+            aria-label="Checking connection" />
+    );
+  }
+
+  if (status === "live") {
+    return (
+      <motion.span
+        initial={{ opacity: 0, scale: 0.8 }}
+        animate={{ opacity: 1, scale: 1 }}
+        className={cn(
+          "hidden items-center gap-1.5 rounded-full border border-aurora/30 bg-aurora/10 px-2 py-1 text-[11px] font-medium text-aurora md:inline-flex",
+        )}
+        aria-label="Connected"
+      >
+        <span className="relative flex h-1.5 w-1.5">
+          <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-aurora/60 opacity-75" />
+          <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-aurora" />
+        </span>
+        Live
+      </motion.span>
+    );
+  }
 
   return (
-    <motion.div
-      initial={{ opacity: 0, y: -4 }}
-      animate={{ opacity: 1, y: 0 }}
-      className={cn(
-        "group relative hidden items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-medium md:inline-flex",
-        status === "live"
-          ? "border-aurora/50 bg-aurora/10 text-aurora"
-          : status === "demo"
-            ? "border-sunrise/40 bg-sunrise/10 text-sunrise"
-            : "border-border/60 bg-muted/50 text-muted-foreground",
-      )}
-      title={HINT[status]}
+    <motion.span
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      className="hidden items-center gap-1.5 rounded-full border border-border/60 bg-muted/40 px-2 py-1 text-[11px] font-medium text-muted-foreground md:inline-flex"
     >
-      <Icon className={cn("h-3.5 w-3.5", status === "checking" && "animate-spin")} />
-      {LABEL[status]}
-      <span className="absolute right-0 top-[calc(100%+6px)] hidden w-64 rounded-xl border border-border/60 bg-card/90 p-3 text-[11px] leading-relaxed text-muted-foreground shadow-glass backdrop-blur-xl group-hover:block">
-        {HINT[status]}
-      </span>
-    </motion.div>
+      <span className="h-1.5 w-1.5 rounded-full bg-muted-foreground/60" />
+      Preview
+      <span className="sr-only">Supabase is not configured; showing sample data.</span>
+    </motion.span>
   );
 }
