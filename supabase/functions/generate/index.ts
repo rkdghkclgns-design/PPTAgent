@@ -143,25 +143,91 @@ function attachmentText(prompt: string, attachments: Attachment[]): string {
   return prompt + "\n\n---\nReference material from attachments:\n\n" + textBlobs.join("\n\n");
 }
 
+function cleanTitle(raw: string): string {
+  // Strip leading "12. ", "12) ", "12: " etc. that Gemini sometimes prepends
+  // when the prompt says "Generate slides X-Y" - purely cosmetic.
+  return raw.replace(/^\s*\d+\s*[.)\]:\-]\s*/, "").slice(0, 120);
+}
+
 function clampSlides(slides: Slide[], slideCount: number): Slide[] {
   return slides.slice(0, slideCount).map((s) => ({
-    title: String(s.title ?? "").slice(0, 120),
+    title: cleanTitle(String(s.title ?? "")),
     bullets: Array.isArray(s.bullets) ? s.bullets.map(String).slice(0, 6) : [],
     notes: s.notes ? String(s.notes).slice(0, 400) : undefined,
     imagePrompt: s.imagePrompt ? String(s.imagePrompt).slice(0, 400) : undefined,
   }));
 }
 
+/**
+ * Parse Gemini's JSON response even when the model got cut off mid-object.
+ *
+ * Gemini 2.5 Flash can exhaust the output budget on large slide counts and
+ * return an unterminated string. We keep trimming back to the last completed
+ * slide object so the user still sees N-1 good slides instead of a sample.
+ */
 function parseSlidesFromText(raw: string): Slide[] {
   let body = raw.trim();
   if (!body.startsWith("{")) {
     const m = body.match(/\{[\s\S]*\}/);
     if (m) body = m[0];
   }
-  const parsed = JSON.parse(body);
-  const slides = (parsed.slides ?? parsed) as Slide[];
-  if (!Array.isArray(slides) || slides.length === 0) throw new Error("empty slides array");
-  return slides;
+
+  try {
+    const parsed = JSON.parse(body);
+    const slides = (parsed.slides ?? parsed) as Slide[];
+    if (Array.isArray(slides) && slides.length > 0) return slides;
+    throw new Error("empty slides array");
+  } catch (firstErr) {
+    // Truncated? Cut after the last balanced `}` inside the slides array and
+    // re-parse. Pattern:   ...{..."slides":[ {...}, {...}, {truncated...
+    const lastGood = findLastCompleteSlide(body);
+    if (lastGood) {
+      try {
+        const parsed = JSON.parse(lastGood);
+        const slides = (parsed.slides ?? parsed) as Slide[];
+        if (Array.isArray(slides) && slides.length > 0) {
+          console.warn(`parseSlidesFromText recovered ${slides.length} slides from truncated JSON`);
+          return slides;
+        }
+      } catch (_err) {
+        // fall through to the original error
+      }
+    }
+    throw firstErr;
+  }
+}
+
+/** Walk `body` keeping a stack of {}/[]/quotes; return the substring ending at
+ *  the last position where the stack was balanced at depth 2 (one `slides` array
+ *  plus one slide object) OR the outermost object closed naturally. */
+function findLastCompleteSlide(body: string): string | null {
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+  let lastGoodEnd = -1;
+  // Find "slides":[ so we know where the array starts.
+  const slidesIdx = body.search(/"slides"\s*:\s*\[/);
+  if (slidesIdx < 0) return null;
+  const arrayStart = body.indexOf("[", slidesIdx);
+  if (arrayStart < 0) return null;
+
+  for (let i = arrayStart; i < body.length; i++) {
+    const ch = body[i];
+    if (escape) { escape = false; continue; }
+    if (ch === "\\") { escape = true; continue; }
+    if (ch === '"') { inString = !inString; continue; }
+    if (inString) continue;
+    if (ch === "{" || ch === "[") depth++;
+    else if (ch === "}" || ch === "]") {
+      depth--;
+      // depth 1 after closing = just finished a slide object inside the array
+      if (depth === 1 && ch === "}") lastGoodEnd = i;
+      if (depth === 0) break;
+    }
+  }
+  if (lastGoodEnd < 0) return null;
+  // Reassemble a valid envelope: everything up to the last good `}` + ]}
+  return body.slice(0, lastGoodEnd + 1) + "]}";
 }
 
 // ---------------------------------------------------------------------------
@@ -179,7 +245,48 @@ function buildGeminiUserParts(prompt: string, attachments: Attachment[]): any[] 
   return parts;
 }
 
+/**
+ * Public entry point - chunks big requests into 12-slide calls so we don't
+ * hit the 65k output-token ceiling on Gemini 2.5 Flash.
+ */
 async function callGemini(
+  apiKey: string,
+  prompt: string,
+  slideCount: number,
+  language: string,
+  model: string,
+  attachments: Attachment[],
+): Promise<Slide[]> {
+  const CHUNK = 12;
+  if (slideCount <= CHUNK) {
+    return callGeminiOnce(apiKey, prompt, slideCount, language, model, attachments);
+  }
+  const all: Slide[] = [];
+  for (let start = 0; start < slideCount; start += CHUNK) {
+    const chunkSize = Math.min(CHUNK, slideCount - start);
+    const priorTitles = all.map((s, i) => `${i + 1}. ${s.title}`).slice(-30).join("\n");
+    const augmented = [
+      `Generate slides ${start + 1}-${start + chunkSize} of a ${slideCount}-slide deck (this call produces ${chunkSize} slide objects).`,
+      priorTitles ? `Previous slide titles for continuity:\n${priorTitles}` : "",
+      `Original topic / instructions:\n${prompt}`,
+    ].filter(Boolean).join("\n\n");
+    // Only the first chunk carries attachments - they're already in the
+    // context by the time subsequent chunks run.
+    const chunkAttachments = start === 0 ? attachments : [];
+    const chunkSlides = await callGeminiOnce(
+      apiKey,
+      augmented,
+      chunkSize,
+      language,
+      model,
+      chunkAttachments,
+    );
+    all.push(...chunkSlides);
+  }
+  return all.slice(0, slideCount);
+}
+
+async function callGeminiOnce(
   apiKey: string,
   prompt: string,
   slideCount: number,
@@ -193,7 +300,8 @@ async function callGemini(
     generationConfig: {
       responseMimeType: "application/json",
       temperature: 0.6,
-      maxOutputTokens: Math.min(32000, 1500 + slideCount * 380),
+      maxOutputTokens: Math.min(60000, 2500 + slideCount * 700),
+      thinkingConfig: { thinkingBudget: 0 },
     },
   };
   const res = await fetch(`${GENAI_BASE}/models/${encodeURIComponent(model)}:generateContent`, {
