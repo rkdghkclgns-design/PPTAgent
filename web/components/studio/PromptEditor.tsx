@@ -1,21 +1,34 @@
 "use client";
 
-import { useState } from "react";
-import { ImageIcon, Play, Sparkles, Wand2 } from "lucide-react";
-import { motion } from "framer-motion";
+import { useCallback, useState } from "react";
+import { useDropzone } from "react-dropzone";
+import {
+  FileText,
+  Image as ImageIcon,
+  ImagePlus,
+  Paperclip,
+  Play,
+  Sparkles,
+  Wand2,
+  X,
+} from "lucide-react";
+import { AnimatePresence, motion } from "framer-motion";
 import { toast } from "sonner";
 
 import { MotionButton } from "@/components/common/MotionButton";
 import { ModelSelector } from "@/components/studio/ModelSelector";
 import { useStudioStore } from "@/lib/store";
-import { generateDeck } from "@/lib/api";
-import { cn } from "@/lib/utils";
+import type { AttachmentEntry } from "@/lib/store";
+import { fileToAttachment, generateDeck } from "@/lib/api";
+import { cn, formatBytes } from "@/lib/utils";
 
 const PROMPT_SUGGESTIONS = [
   "AI 스타트업 투자 유치용 피치덱",
   "고등학생을 위한 기후변화 수업 슬라이드",
   "Q2 프로덕트 OKR 리뷰 (차트 포함)",
 ];
+
+const MAX_ATTACHMENTS = 8;
 
 export function PromptEditor() {
   const prompt = useStudioStore((s) => s.prompt);
@@ -27,6 +40,9 @@ export function PromptEditor() {
   const language = useStudioStore((s) => s.language);
   const setLanguage = useStudioStore((s) => s.setLanguage);
   const overrides = useStudioStore((s) => s.overrides);
+  const attachments = useStudioStore((s) => s.attachments);
+  const addAttachment = useStudioStore((s) => s.addAttachment);
+  const removeAttachment = useStudioStore((s) => s.removeAttachment);
 
   const status = useStudioStore((s) => s.status);
   const beginJob = useStudioStore((s) => s.beginJob);
@@ -37,6 +53,44 @@ export function PromptEditor() {
 
   const [submitting, setSubmitting] = useState(false);
 
+  const onDrop = useCallback(
+    async (files: File[]) => {
+      for (const file of files) {
+        const current = useStudioStore.getState().attachments.length;
+        if (current >= MAX_ATTACHMENTS) {
+          toast.error(`최대 ${MAX_ATTACHMENTS}개까지 첨부 가능합니다`);
+          break;
+        }
+        try {
+          const payload = await fileToAttachment(file);
+          const entry: AttachmentEntry = {
+            ...payload,
+            id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            size: file.size,
+          };
+          addAttachment(entry);
+        } catch (err) {
+          console.error(err);
+          toast.error(err instanceof Error ? err.message : "파일 첨부 실패");
+        }
+      }
+    },
+    [addAttachment],
+  );
+
+  const { getRootProps, getInputProps, isDragActive } = useDropzone({
+    onDrop,
+    multiple: true,
+    maxSize: 8 * 1024 * 1024,
+    accept: {
+      "image/*": [".png", ".jpg", ".jpeg", ".webp"],
+      "text/plain": [".txt"],
+      "text/markdown": [".md"],
+      "text/csv": [".csv"],
+      "application/json": [".json"],
+    },
+  });
+
   async function handleGenerate() {
     if (prompt.trim().length < 2) {
       toast.error("프롬프트를 입력해 주세요.");
@@ -44,13 +98,11 @@ export function PromptEditor() {
     }
     setSubmitting(true);
     beginJob();
-    updateProgress(0.1);
+    updateProgress(0.08);
 
-    // Rough progress heartbeat: Supabase call is monolithic so we fake a
-    // smooth climb to 0.9 while waiting, then snap to 1.0 on success.
     const heartbeat = setInterval(() => {
       const s = useStudioStore.getState();
-      if (s.progress < 0.9) useStudioStore.getState().updateProgress(s.progress + 0.03);
+      if (s.progress < 0.9) s.updateProgress(s.progress + 0.02);
     }, 800);
 
     try {
@@ -60,10 +112,17 @@ export function PromptEditor() {
         includeImages,
         language,
         models: overrides,
+        attachments: attachments.map(({ id: _id, size: _size, ...payload }) => payload),
       });
-      setSlides(result.slides);
+      setSlides(result.slides, result.sample_mode ?? false);
       succeed();
-      toast.success(`${result.slide_count}장 슬라이드 생성 완료`);
+      if (result.sample_mode) {
+        toast.message("샘플 모드로 생성됨", {
+          description: "실제 AI 응답을 받으려면 Supabase에 GOOGLE_API_KEY 를 등록해 주세요.",
+        });
+      } else {
+        toast.success(`${result.slide_count}장 슬라이드 생성 완료`);
+      }
     } catch (err) {
       console.error(err);
       const message = err instanceof Error ? err.message : String(err);
@@ -112,26 +171,84 @@ export function PromptEditor() {
         </div>
       </div>
 
-      {/* Slide count + language + images toggle */}
+      {/* File attachments */}
+      <div
+        {...getRootProps()}
+        className={cn(
+          "glass relative flex cursor-pointer flex-col items-center justify-center gap-1.5 rounded-3xl border border-dashed border-border/70 p-5 text-center text-sm text-muted-foreground transition",
+          isDragActive && "border-electron bg-electron/5 text-foreground",
+        )}
+      >
+        <input {...getInputProps()} />
+        <Paperclip className="h-5 w-5" />
+        <p className="font-medium">
+          {isDragActive ? "놓으면 첨부됩니다" : "참고 자료를 드래그하거나 클릭"}
+        </p>
+        <p className="text-xs text-muted-foreground/80">
+          이미지 · 텍스트 · 마크다운 · CSV · JSON (최대 8개)
+        </p>
+      </div>
+
+      <AnimatePresence>
+        {attachments.length > 0 && (
+          <motion.ul
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 8 }}
+            className="grid gap-2 md:grid-cols-2"
+          >
+            {attachments.map((a) => (
+              <li
+                key={a.id}
+                className="flex items-center gap-3 rounded-2xl border border-border/60 bg-muted/40 px-3 py-2.5"
+              >
+                {a.mime_type.startsWith("image/") ? (
+                  <ImageIcon className="h-4 w-4 text-aurora" />
+                ) : (
+                  <FileText className="h-4 w-4 text-muted-foreground" />
+                )}
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-medium">{a.name}</p>
+                  <p className="text-xs text-muted-foreground">
+                    {a.mime_type} · {formatBytes(a.size)}
+                  </p>
+                </div>
+                <button
+                  onClick={() => removeAttachment(a.id)}
+                  className="rounded-full p-1 text-muted-foreground transition hover:bg-background hover:text-foreground"
+                  aria-label="첨부 제거"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </li>
+            ))}
+          </motion.ul>
+        )}
+      </AnimatePresence>
+
+      {/* Slide count + language + image toggle */}
       <div className="grid gap-4 md:grid-cols-[1fr_auto]">
         <div className="glass rounded-2xl px-5 py-4">
           <div className="flex items-center justify-between">
             <span className="text-xs font-semibold uppercase tracking-[0.2em] text-muted-foreground">
               슬라이드 수량
             </span>
-            <motion.span
-              key={slideCount}
-              initial={{ scale: 0.85, opacity: 0.4 }}
-              animate={{ scale: 1, opacity: 1 }}
-              className="font-display text-2xl font-semibold text-foreground"
-            >
-              {slideCount}장
-            </motion.span>
+            <div className="flex items-center gap-2">
+              <input
+                type="number"
+                min={1}
+                max={100}
+                value={slideCount}
+                onChange={(e) => setSlideCount(Number(e.target.value) || 1)}
+                className="focus-ring w-16 rounded-lg border border-border/60 bg-muted/40 px-2 py-1 text-right font-display text-lg font-semibold"
+              />
+              <span className="font-display text-lg font-semibold text-muted-foreground">장</span>
+            </div>
           </div>
           <input
             type="range"
-            min={3}
-            max={20}
+            min={1}
+            max={100}
             step={1}
             value={slideCount}
             onChange={(e) => setSlideCount(Number(e.target.value))}
@@ -144,15 +261,23 @@ export function PromptEditor() {
                        [&::-webkit-slider-thumb]:shadow-halo"
           />
           <div className="mt-1 flex justify-between text-[10px] text-muted-foreground">
-            <span>3장</span>
-            <span>20장</span>
+            <span>1장</span>
+            <span>25</span>
+            <span>50</span>
+            <span>75</span>
+            <span>100장</span>
           </div>
+          {slideCount > 40 && (
+            <p className="mt-2 text-[10px] text-sunrise/80">
+              ⓘ 40장 이상은 생성 시간이 1분 이상 걸릴 수 있습니다.
+            </p>
+          )}
         </div>
 
         <div className="flex flex-col gap-3 md:w-56">
           <label className="glass flex cursor-pointer items-center justify-between gap-3 rounded-2xl px-4 py-3 transition hover:border-electron/40">
             <span className="flex items-center gap-2 text-sm">
-              <ImageIcon className="h-4 w-4 text-aurora" />
+              <ImagePlus className="h-4 w-4 text-aurora" />
               참고 이미지 포함
             </span>
             <span
@@ -208,7 +333,13 @@ export function PromptEditor() {
           onClick={handleGenerate}
           size="lg"
           disabled={submitting}
-          iconLeft={submitting ? <Wand2 className="h-4 w-4 animate-pulse" /> : <Play className="h-4 w-4" />}
+          iconLeft={
+            submitting ? (
+              <Wand2 className="h-4 w-4 animate-pulse" />
+            ) : (
+              <Play className="h-4 w-4" />
+            )
+          }
         >
           {submitting ? "생성 중..." : `${slideCount}장 PPT 만들기`}
         </MotionButton>

@@ -19,6 +19,7 @@ export function SlidePreview() {
   const progress = useStudioStore((s) => s.progress);
   const error = useStudioStore((s) => s.error);
   const prompt = useStudioStore((s) => s.prompt);
+  const sampleMode = useStudioStore((s) => s.sampleMode);
 
   const [zoomOpen, setZoomOpen] = useState(false);
   const [downloading, setDownloading] = useState(false);
@@ -64,6 +65,20 @@ export function SlidePreview() {
       </header>
 
       <div className="flex flex-1 flex-col gap-4 overflow-y-auto scrollbar-slim p-5">
+        {sampleMode && (
+          <motion.div
+            initial={{ opacity: 0, y: -4 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="rounded-2xl border border-sunrise/40 bg-sunrise/10 px-4 py-3 text-xs text-sunrise"
+          >
+            <p className="font-semibold">샘플 모드</p>
+            <p className="mt-1 text-sunrise/80">
+              GOOGLE_API_KEY 가 Supabase Secrets 에 등록되어 있지 않아 샘플 슬라이드를 반환했습니다.
+              키 등록 후 다시 실행하면 실제 AI 생성이 시작됩니다.
+            </p>
+          </motion.div>
+        )}
+
         {/* Large main slide */}
         <MainSlide
           slide={current}

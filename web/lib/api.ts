@@ -18,12 +18,23 @@ const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? "";
 
 export type ModelOverrides = Partial<Record<ModelSlot, string>>;
 
+/** Shape the Edge Function expects on the wire. */
+export interface AttachmentPayload {
+  name: string;
+  mime_type: string;
+  /** Plain-text contents for text/* attachments. */
+  text?: string;
+  /** Base64 (no data: prefix) for image/* attachments. */
+  image_b64?: string;
+}
+
 export interface GenerateRequest {
   prompt: string;
   slideCount: number;
   includeImages: boolean;
   language?: "ko" | "en";
   models?: ModelOverrides;
+  attachments?: AttachmentPayload[];
 }
 
 export interface SlideData {
@@ -39,6 +50,9 @@ export interface SlideData {
 export interface GenerateResult {
   slide_count: number;
   slides: SlideData[];
+  /** True when the Edge Function returned deterministic sample slides because
+   *  GOOGLE_API_KEY isn't configured. */
+  sample_mode?: boolean;
 }
 
 /** True when browser can drive a real generation via Supabase. */
@@ -78,6 +92,7 @@ export async function generateDeck(req: GenerateRequest): Promise<GenerateResult
       language: req.language ?? "ko",
       chat_model: chatModel,
       image_model: imageModel,
+      attachments: req.attachments ?? [],
     }),
   });
   if (!res.ok) {
@@ -92,6 +107,7 @@ export async function generateDeck(req: GenerateRequest): Promise<GenerateResult
   }
   const json = (await res.json()) as {
     slide_count: number;
+    sample_mode?: boolean;
     slides: Array<{
       title: string;
       bullets: string[];
@@ -109,5 +125,36 @@ export async function generateDeck(req: GenerateRequest): Promise<GenerateResult
     imagePrompt: s.imagePrompt,
     imageUrl: s.imageB64 ? `data:image/png;base64,${s.imageB64}` : undefined,
   }));
-  return { slide_count: json.slide_count, slides };
+  return { slide_count: json.slide_count, slides, sample_mode: json.sample_mode ?? false };
+}
+
+// ---------------------------------------------------------------------------
+// Attachment loader - reads a File into the AttachmentPayload shape the Edge
+// Function expects (text excerpt or base64 image).
+// ---------------------------------------------------------------------------
+
+const MAX_TEXT_BYTES = 128 * 1024; // 128 KB - keeps prompt size sane
+const MAX_IMAGE_BYTES = 4 * 1024 * 1024; // 4 MB per image
+
+export async function fileToAttachment(file: File): Promise<AttachmentPayload> {
+  const mime = file.type || "application/octet-stream";
+  if (mime.startsWith("image/")) {
+    if (file.size > MAX_IMAGE_BYTES) throw new Error(`${file.name}: 이미지가 4MB 를 초과합니다`);
+    const buf = await file.arrayBuffer();
+    const bytes = new Uint8Array(buf);
+    // Avoid calling String.fromCharCode on the whole array (stack overflow on
+    // large files) - chunk it.
+    let binary = "";
+    const chunk = 0x8000;
+    for (let i = 0; i < bytes.length; i += chunk) {
+      binary += String.fromCharCode.apply(null, Array.from(bytes.subarray(i, i + chunk)));
+    }
+    return { name: file.name, mime_type: mime, image_b64: btoa(binary) };
+  }
+
+  // Treat everything non-image as best-effort text extraction. PDFs will come
+  // through as garbled bytes, but text/markdown/csv/json all work fine.
+  const slice = file.slice(0, MAX_TEXT_BYTES);
+  const text = await slice.text();
+  return { name: file.name, mime_type: mime, text };
 }
