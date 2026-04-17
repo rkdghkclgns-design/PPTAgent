@@ -106,7 +106,7 @@ export const useStudioStore = create<StudioState>((set) => ({
     set({
       slides,
       activeSlide: 0,
-      sampleMode: meta?.sampleMode ?? meta?.provider === "sample" ?? false,
+      sampleMode: meta?.sampleMode ?? meta?.provider === "sample",
       provider: meta?.provider ?? null,
       providerNote: meta?.note ?? null,
     }),
