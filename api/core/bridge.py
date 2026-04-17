@@ -162,7 +162,6 @@ def _message_to_event(job_id: str, msg: Any, *, stage: str = "log") -> GenerateE
     install).
     """
     text = getattr(msg, "text", None)
-    role = getattr(getattr(msg, "role", None), "value", None) or "system"
     if text is None:
         text = str(msg)
     resolved_stage = _infer_stage(text, stage)

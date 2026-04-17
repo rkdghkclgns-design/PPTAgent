@@ -253,9 +253,7 @@ serve(async (req) => {
   if (!kind) return bad(origin, 400, `unsupported model "${model}"`);
 
   try {
-    return kind === "image"
-      ? await handleImage(origin, model, body)
-      : await handleChat(origin, model, body);
+    return kind === "image" ? await handleImage(origin, model, body) : await handleChat(origin, model, body);
   } catch (err) {
     return bad(origin, 500, "proxy exception", String(err));
   }
