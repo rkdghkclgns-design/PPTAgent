@@ -77,7 +77,7 @@ export async function generateDeck(req: GenerateRequest): Promise<GenerateResult
   const url = `${SUPABASE_URL.replace(/\/$/, "")}/functions/v1/generate`;
 
   const chatModel =
-    (req.models?.research_agent ?? req.models?.design_agent ?? "google/gemini-2.0-flash")
+    (req.models?.research_agent ?? req.models?.design_agent ?? "google/gemini-2.5-flash")
       .replace(/^google\//, "");
   const imageModel =
     (req.models?.t2i_model ?? "google/imagen-3.0-generate-002").replace(/^google\//, "");

@@ -94,12 +94,19 @@ async function readFromVault(secretName: string): Promise<string | null> {
 }
 
 async function resolveProvider(): Promise<{ provider: Provider; key: string }> {
-  const envGoogle = Deno.env.get("GOOGLE_API_KEY");
-  if (envGoogle) return { provider: "google", key: envGoogle };
+  // Edge Function secrets (Dashboard → Functions → Secrets)
+  for (const name of ["GOOGLE_API_KEY", "GEMINI_API_KEY"]) {
+    const v = Deno.env.get(name);
+    if (v) return { provider: "google", key: v };
+  }
   const envAnthropic = Deno.env.get("ANTHROPIC_API_KEY");
   if (envAnthropic) return { provider: "anthropic", key: envAnthropic };
-  const vaultGoogle = await readFromVault("GOOGLE_API_KEY");
-  if (vaultGoogle) return { provider: "google", key: vaultGoogle };
+
+  // Fall back to Postgres vault secrets via the service-role RPC.
+  for (const name of ["GOOGLE_API_KEY", "GEMINI_API_KEY"]) {
+    const v = await readFromVault(name);
+    if (v) return { provider: "google", key: v };
+  }
   for (const name of ["ANTHROPIC_API_KEY", "CCGS_ANTHROPIC_API_KEY"]) {
     const v = await readFromVault(name);
     if (v) return { provider: "anthropic", key: v };
@@ -363,7 +370,7 @@ serve(async (req) => {
   const slideCount = Math.max(1, Math.min(100, Number(body.slide_count ?? 8)));
   const includeImages = body.include_images !== false;
   const language = String(body.language ?? "ko");
-  const chatModel = String(body.chat_model ?? "gemini-2.0-flash");
+  const chatModel = String(body.chat_model ?? "gemini-2.5-flash");
   const imageModel = String(body.image_model ?? "imagen-3.0-generate-002");
   const attachments: Attachment[] = Array.isArray(body.attachments)
     ? body.attachments.slice(0, 8)

@@ -42,7 +42,7 @@ export const MODEL_SLOT_HINT: Record<ModelSlot, string> = {
 /** Default model for each slot - Imagen is the global default per product decision. */
 export const DEFAULT_MODELS: Record<ModelSlot, string> = {
   t2i_model: "google/imagen-3.0-generate-002",
-  research_agent: "google/gemini-2.0-flash",
+  research_agent: "google/gemini-2.5-flash",
   long_context_model: "google/gemini-2.5-flash",
   vision_model: "google/gemini-2.0-flash-vision",
   design_agent: "google/gemini-2.5-pro",
