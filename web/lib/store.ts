@@ -71,22 +71,28 @@ export const useStudioStore = create<StudioState>((set) => ({
   setJob: (job) => set({ job, events: [], slides: [], progress: 0, pptxUrl: null }),
   appendEvent: (ev) =>
     set((s) => {
-      const events = [...s.events, ev];
-      let { slides, activeSlide, progress, pptxUrl } = s;
-      if (typeof ev.percent === "number") progress = Math.max(progress, ev.percent);
-      if (ev.stage === "design" && typeof ev.slide_index === "number") {
-        const idx = ev.slide_index;
-        const next = [...slides];
-        next[idx] = {
-          index: idx,
-          imageUrl: ev.slide_preview_url ?? next[idx]?.imageUrl,
-          title: ev.message,
-        };
-        slides = next;
-        activeSlide = idx;
-      }
-      if (ev.pptx_url) pptxUrl = ev.pptx_url;
-      return { events, slides, activeSlide, progress, pptxUrl };
+      const progress =
+        typeof ev.percent === "number" ? Math.max(s.progress, ev.percent) : s.progress;
+      const [slides, activeSlide] =
+        ev.stage === "design" && typeof ev.slide_index === "number"
+          ? (() => {
+              const idx = ev.slide_index;
+              const next = s.slides.slice();
+              next[idx] = {
+                index: idx,
+                imageUrl: ev.slide_preview_url ?? next[idx]?.imageUrl,
+                title: ev.message,
+              };
+              return [next, idx] as const;
+            })()
+          : ([s.slides, s.activeSlide] as const);
+      return {
+        events: [...s.events, ev],
+        slides,
+        activeSlide,
+        progress,
+        pptxUrl: ev.pptx_url ?? s.pptxUrl,
+      };
     }),
   setActiveSlide: (index) => set({ activeSlide: index }),
   reset: () => set({ ...initialState }),

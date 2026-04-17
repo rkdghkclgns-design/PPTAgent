@@ -96,6 +96,7 @@ export function PromptEditor() {
       try {
         await runDemoJob({
           prompt: prompt.trim(),
+          jobId: demo.job_id,
           onEvent: (ev) => {
             appendEvent(ev);
             if (ev.stage === "done") toast.success("데모 스트림 완료");

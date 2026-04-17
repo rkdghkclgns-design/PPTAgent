@@ -81,6 +81,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
+          # Keyed on package.json because we don't ship a lockfile yet. When
+          # we add web/package-lock.json, change this to the lockfile path.
           cache: npm
           cache-dependency-path: web/package.json
 

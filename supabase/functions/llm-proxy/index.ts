@@ -27,25 +27,47 @@ import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 const GOOGLE_API_KEY = Deno.env.get("GOOGLE_API_KEY") ?? "";
 const GENAI_BASE = "https://generativelanguage.googleapis.com/v1beta";
 
+// Fail loudly on cold start so misconfiguration shows up in the deploy log.
+if (!GOOGLE_API_KEY) {
+  console.error("llm-proxy: GOOGLE_API_KEY is not set - requests will 500");
+}
+
 // ----------------------------------------------------------------------------
 // CORS / auth helpers
 // ----------------------------------------------------------------------------
 
-const CORS_HEADERS: HeadersInit = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-  "Access-Control-Allow-Methods": "POST, OPTIONS",
-};
+// Allow-list of browser origins. The FastAPI server (server-to-server) does
+// not trigger CORS, so keep this list tight.
+const ALLOWED_ORIGINS = new Set(
+  (Deno.env.get("ALLOWED_ORIGINS") ?? "https://rkdghkclgns-design.github.io,http://localhost:3000")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean),
+);
 
-function json(body: unknown, init: ResponseInit = {}): Response {
+function corsHeaders(origin: string | null): HeadersInit {
+  const allow = origin && ALLOWED_ORIGINS.has(origin) ? origin : "null";
+  return {
+    "Access-Control-Allow-Origin": allow,
+    "Vary": "Origin",
+    "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+    "Access-Control-Allow-Methods": "POST, OPTIONS",
+    "Access-Control-Max-Age": "3600",
+  };
+}
+
+function json(body: unknown, origin: string | null, init: ResponseInit = {}): Response {
   return new Response(JSON.stringify(body), {
     ...init,
-    headers: { ...CORS_HEADERS, "content-type": "application/json", ...(init.headers ?? {}) },
+    headers: { ...corsHeaders(origin), "content-type": "application/json", ...(init.headers ?? {}) },
   });
 }
 
-function bad(status: number, message: string, details?: unknown): Response {
-  return json({ error: { message, status, details } }, { status });
+function bad(origin: string | null, status: number, message: string, details?: unknown): Response {
+  // Upstream error bodies can leak infrastructure metadata; keep the reply
+  // generic for untrusted callers and log the raw body for the operator.
+  if (details) console.warn("llm-proxy error detail", { status, message, details });
+  return json({ error: { message, status } }, origin, { status });
 }
 
 // ----------------------------------------------------------------------------
@@ -56,6 +78,11 @@ type ChatMessage = {
   role: "system" | "user" | "assistant";
   content: string | Array<{ type: string; text?: string; image_url?: { url: string } }>;
 };
+
+// Hosts whose images we trust to hand to Gemini as a fileUri. Anything outside
+// this allowlist is dropped to stop callers from using this function as an
+// SSRF proxy into internal networks.
+const TRUSTED_IMAGE_HOSTS = /^(?:[a-z0-9-]+\.)*(?:supabase\.co|supabase\.in|githubusercontent\.com|unsplash\.com|googleusercontent\.com)$/i;
 
 function toGeminiParts(content: ChatMessage["content"]): any[] {
   if (typeof content === "string") return [{ text: content }];
@@ -70,7 +97,16 @@ function toGeminiParts(content: ChatMessage["content"]): any[] {
         const mimeType = meta.split(";")[0] || "image/png";
         parts.push({ inlineData: { mimeType, data } });
       } else {
-        parts.push({ fileData: { mimeType: "image/*", fileUri: url } });
+        try {
+          const parsed = new URL(url);
+          if (parsed.protocol !== "https:" || !TRUSTED_IMAGE_HOSTS.test(parsed.hostname)) {
+            console.warn("llm-proxy: dropped untrusted image_url", parsed.hostname);
+            continue;
+          }
+          parts.push({ fileData: { mimeType: "image/*", fileUri: url } });
+        } catch {
+          // malformed URL - skip
+        }
       }
     }
   }
@@ -82,7 +118,8 @@ function messagesToGemini(messages: ChatMessage[]): { systemInstruction?: any; c
   let systemInstruction: any | undefined;
   for (const m of messages) {
     if (m.role === "system") {
-      systemInstruction = { role: "user", parts: toGeminiParts(m.content) };
+      // Gemini's systemInstruction field doesn't take a `role` key - just parts.
+      systemInstruction = { parts: toGeminiParts(m.content) };
       continue;
     }
     contents.push({
@@ -123,7 +160,13 @@ function geminiToOpenAI(model: string, resp: any): any {
 // Endpoint handlers
 // ----------------------------------------------------------------------------
 
-async function handleChat(model: string, body: any): Promise<Response> {
+const googleAuthHeaders = (): HeadersInit => ({
+  "content-type": "application/json",
+  // Use a header instead of ?key=... to keep the API key out of URL-based logs.
+  "x-goog-api-key": GOOGLE_API_KEY,
+});
+
+async function handleChat(origin: string | null, model: string, body: any): Promise<Response> {
   const googleModel = model.replace(/^google\//, "");
   const { systemInstruction, contents } = messagesToGemini(body.messages ?? []);
   const payload: any = {
@@ -136,22 +179,22 @@ async function handleChat(model: string, body: any): Promise<Response> {
   };
   if (systemInstruction) payload.systemInstruction = systemInstruction;
 
-  const url = `${GENAI_BASE}/models/${encodeURIComponent(googleModel)}:generateContent?key=${GOOGLE_API_KEY}`;
+  const url = `${GENAI_BASE}/models/${encodeURIComponent(googleModel)}:generateContent`;
   const res = await fetch(url, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: googleAuthHeaders(),
     body: JSON.stringify(payload),
   });
-  if (!res.ok) return bad(res.status, "gemini upstream error", await res.text());
+  if (!res.ok) return bad(origin, res.status, "gemini upstream error", await res.text());
   const data = await res.json();
-  return json(geminiToOpenAI(model, data));
+  return json(geminiToOpenAI(model, data), origin);
 }
 
-async function handleImage(model: string, body: any): Promise<Response> {
+async function handleImage(origin: string | null, model: string, body: any): Promise<Response> {
   const googleModel = model.replace(/^google\//, "");
   const prompt = body.prompt ??
     (Array.isArray(body.messages) ? body.messages.at(-1)?.content : "") ?? "";
-  if (!prompt) return bad(400, "prompt is required for image models");
+  if (!prompt) return bad(origin, 400, "prompt is required for image models");
 
   const payload = {
     instances: [{ prompt }],
@@ -162,13 +205,13 @@ async function handleImage(model: string, body: any): Promise<Response> {
       personGeneration: "allow_adult",
     },
   };
-  const url = `${GENAI_BASE}/models/${encodeURIComponent(googleModel)}:predict?key=${GOOGLE_API_KEY}`;
+  const url = `${GENAI_BASE}/models/${encodeURIComponent(googleModel)}:predict`;
   const res = await fetch(url, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: googleAuthHeaders(),
     body: JSON.stringify(payload),
   });
-  if (!res.ok) return bad(res.status, "imagen upstream error", await res.text());
+  if (!res.ok) return bad(origin, res.status, "imagen upstream error", await res.text());
   const data = await res.json();
   const predictions = data?.predictions ?? [];
   return json({
@@ -178,7 +221,7 @@ async function handleImage(model: string, body: any): Promise<Response> {
       b64_json: p?.bytesBase64Encoded ?? null,
       revised_prompt: p?.prompt ?? prompt,
     })),
-  });
+  }, origin);
 }
 
 // ----------------------------------------------------------------------------
@@ -194,23 +237,26 @@ function routeModel(model: string): "chat" | "image" | null {
 }
 
 serve(async (req) => {
-  if (req.method === "OPTIONS") return new Response(null, { headers: CORS_HEADERS });
-  if (req.method !== "POST") return bad(405, "method not allowed");
-  if (!GOOGLE_API_KEY) return bad(500, "GOOGLE_API_KEY secret is not configured");
+  const origin = req.headers.get("origin");
+  if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders(origin) });
+  if (req.method !== "POST") return bad(origin, 405, "method not allowed");
+  if (!GOOGLE_API_KEY) return bad(origin, 500, "GOOGLE_API_KEY secret is not configured");
 
   let body: any;
   try {
     body = await req.json();
   } catch {
-    return bad(400, "invalid JSON body");
+    return bad(origin, 400, "invalid JSON body");
   }
   const model = String(body.model ?? "");
   const kind = routeModel(model);
-  if (!kind) return bad(400, `unsupported model "${model}"`);
+  if (!kind) return bad(origin, 400, `unsupported model "${model}"`);
 
   try {
-    return kind === "image" ? await handleImage(model, body) : await handleChat(model, body);
+    return kind === "image"
+      ? await handleImage(origin, model, body)
+      : await handleChat(origin, model, body);
   } catch (err) {
-    return bad(500, "proxy exception", String(err));
+    return bad(origin, 500, "proxy exception", String(err));
   }
 });

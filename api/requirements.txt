@@ -7,7 +7,9 @@ pydantic>=2.9,<3
 pydantic-settings>=2.6,<3
 python-multipart>=0.0.17,<1
 httpx>=0.28,<1
-supabase>=2.9,<3
+# supabase-py intentionally omitted - we use httpx directly against the
+# storage REST API in core/supabase.py. Re-add only if/when we need realtime
+# or gotrue client helpers.
 python-jose[cryptography]>=3.3,<4
 websockets>=13.1,<14
 sse-starlette>=2.1,<3

@@ -29,8 +29,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
 
-# uv
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+# uv - pinned to a specific release tag so supply-chain changes upstream
+# don't silently reshape the image. Bump intentionally; avoid :latest.
+COPY --from=ghcr.io/astral-sh/uv:0.8.15 /uv /usr/local/bin/uv
 
 WORKDIR /app
 

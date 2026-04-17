@@ -7,8 +7,10 @@ messages (cancel, resume, attachment chunking) later.
 
 from __future__ import annotations
 
-import asyncio
+import contextlib
 import json
+import re
+import uuid
 from typing import AsyncIterator
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
@@ -17,15 +19,26 @@ from sse_starlette.sse import EventSourceResponse
 from ..core import AgentBridge
 from ..schemas import GenerateJob, GenerateRequest
 from ..settings import Settings, get_settings
-from .deps import get_bridge
+from .deps import get_bridge, require_auth, require_auth_ws
 
 router = APIRouter(prefix="/generate", tags=["generate"])
+
+
+_FILENAME_SAFE = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+def _safe_filename(name: str | None) -> str:
+    """Strip directory separators and restrict to a conservative charset."""
+    base = (name or "").rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+    clean = _FILENAME_SAFE.sub("_", base)[:120]
+    return clean or "upload"
 
 
 @router.post("", response_model=GenerateJob)
 async def create_job(
     request: GenerateRequest,
     bridge: AgentBridge = Depends(get_bridge),
+    _auth: dict = Depends(require_auth),
 ) -> GenerateJob:
     job = bridge.start(request)
     return GenerateJob(
@@ -40,6 +53,7 @@ async def create_job(
 async def stream_events(
     job_id: str,
     bridge: AgentBridge = Depends(get_bridge),
+    _auth: dict = Depends(require_auth),
 ) -> EventSourceResponse:
     job = bridge.get(job_id)
     if not job:
@@ -59,8 +73,14 @@ async def stream_events(
 async def websocket_events(
     websocket: WebSocket,
     job_id: str,
+    bridge: AgentBridge = Depends(get_bridge),
 ) -> None:
-    bridge: AgentBridge = websocket.app.state.bridge
+    # WebSocket auth piggybacks on the query string (`?token=...`) because
+    # browsers can't attach an Authorization header to native WebSockets.
+    ok = await require_auth_ws(websocket)
+    if not ok:
+        await websocket.close(code=4401)
+        return
     await websocket.accept()
     job = bridge.get(job_id)
     if not job:
@@ -75,7 +95,7 @@ async def websocket_events(
     except WebSocketDisconnect:
         return
     finally:
-        with asyncio.suppress(Exception):  # type: ignore[attr-defined]
+        with contextlib.suppress(Exception):
             await websocket.close()
 
 
@@ -83,16 +103,24 @@ async def websocket_events(
 async def upload_attachment(
     file: UploadFile,
     settings: Settings = Depends(get_settings),
+    _auth: dict = Depends(require_auth),
 ) -> dict[str, str]:
-    """Tiny helper so the frontend can POST files to Supabase Storage via the
-    server (keeps the service-role key off the browser)."""
+    """Accept a user attachment and forward it to Supabase Storage.
 
+    The client-supplied filename is sanitized and prefixed with a server-
+    generated UUID, so a malicious actor can't overwrite other objects or
+    escape the `uploads/` namespace.
+    """
     from ..core.supabase import StorageClient
 
-    if file.size and file.size > settings.max_upload_mb * 1024 * 1024:
+    limit = settings.max_upload_mb * 1024 * 1024
+    # Stream-read with a hard cap - don't rely on declared Content-Length.
+    data = await file.read(limit + 1)
+    if len(data) > limit:
         raise HTTPException(status_code=413, detail="attachment too large")
-    data = await file.read()
-    object_path = f"uploads/{file.filename}"
+
+    name = _safe_filename(file.filename)
+    object_path = f"uploads/{uuid.uuid4().hex[:12]}/{name}"
     client = StorageClient(settings)
     await client.upload(object_path, data, file.content_type or "application/octet-stream")
     signed = await client.signed_url(object_path, expires_in=3600)

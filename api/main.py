@@ -32,10 +32,12 @@ async def lifespan(app: FastAPI):
     settings = get_settings()
     settings.workspace_base.mkdir(parents=True, exist_ok=True)
     app.state.bridge = AgentBridge(settings)
+    await app.state.bridge.start_background_tasks()
     logging.getLogger("api").info(
-        "FastAPI ready - workspace=%s edge_url=%s",
+        "FastAPI ready - workspace=%s edge_url=%s auth=%s",
         settings.workspace_base,
         settings.supabase_edge_function_url or "<unset>",
+        "on" if settings.auth_enabled else "OFF",
     )
     try:
         yield
@@ -59,8 +61,9 @@ def create_app() -> FastAPI:
         CORSMiddleware,
         allow_origins=settings.cors_origins,
         allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
+        allow_methods=settings.cors_allow_methods,
+        allow_headers=settings.cors_allow_headers,
+        max_age=3600,
     )
     app.include_router(health.router)
     app.include_router(models.router)

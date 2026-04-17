@@ -29,22 +29,26 @@ const SLIDE_TITLES = [
 
 interface DemoOptions {
   prompt: string;
+  jobId: string;
   onEvent: (ev: GenerateEvent) => void;
 }
 
 const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-export function createDemoJob(prompt: string): GenerateJob {
+function randomJobId(): string {
+  return `demo-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+export function createDemoJob(_prompt: string): GenerateJob {
   return {
-    job_id: `demo-${Math.random().toString(36).slice(2, 10)}`,
+    job_id: randomJobId(),
     status: "running",
     workspace: "/demo",
     created_at: Date.now() / 1000,
   };
 }
 
-export async function runDemoJob({ prompt, onEvent }: DemoOptions): Promise<void> {
-  const jobId = `demo-${Math.random().toString(36).slice(2, 10)}`;
+export async function runDemoJob({ prompt, jobId, onEvent }: DemoOptions): Promise<void> {
   const emit = (ev: Omit<GenerateEvent, "job_id">) => onEvent({ job_id: jobId, ...ev });
 
   emit({ stage: "log", message: `demo mode: echoing "${prompt.slice(0, 40)}..."` });

@@ -49,9 +49,25 @@ class Settings(BaseSettings):
     default_vision_model: str = Field(default="google/gemini-2.0-flash-vision")
     default_design_model: str = Field(default="google/gemini-2.5-pro")
 
+    # --- Auth ---------------------------------------------------------------
+    auth_enabled: bool = Field(
+        default=True,
+        description="When false, JWT verification is skipped - dev only.",
+    )
+
     # --- Server --------------------------------------------------------------
     cors_origins: list[str] = Field(
-        default_factory=lambda: ["http://localhost:3000"]
+        default_factory=lambda: [
+            "http://localhost:3000",
+            "https://rkdghkclgns-design.github.io",
+        ],
+        description="Browsers allowed to call the API. Production MUST include the deployed frontend origin.",
+    )
+    cors_allow_methods: list[str] = Field(
+        default_factory=lambda: ["GET", "POST", "OPTIONS"]
+    )
+    cors_allow_headers: list[str] = Field(
+        default_factory=lambda: ["authorization", "content-type", "x-requested-with"]
     )
     max_upload_mb: int = Field(default=50)
 

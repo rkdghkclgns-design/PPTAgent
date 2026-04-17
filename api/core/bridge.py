@@ -2,17 +2,18 @@
 
 Design notes:
 
-* We do NOT mutate anything inside `deeppresenter/`. Instead we build a
-  runtime config object whose base_url points at our Supabase Edge Function.
-  The OpenAI-compatible client inside `deeppresenter` then happily sends every
-  chat/image request to Supabase, which proxies to Google.
-* AgentLoop is heavy and synchronous. We run it inside `asyncio.to_thread` and
-  use an `asyncio.Queue` to surface progress events back to the HTTP/WebSocket
-  layer. Stage boundaries are detected by subscribing to deeppresenter's
-  logging hooks where available and falling back to polling the workspace dir.
-* The wrapper is import-guarded: if `deeppresenter` fails to import (missing
-  extras), the API still serves `/health` and `/models` so the frontend can
-  render.
+* We do NOT mutate anything inside `deeppresenter/`. A `DeepPresenterConfig`
+  is built at runtime pointing every `LLM.base_url` at the Supabase Edge
+  Function, so the Google API key never hits this process.
+* `AgentLoop.run()` is an `AsyncGenerator[str | ChatMessage, None]` - intermediate
+  yields are `ChatMessage` instances, the final yield is the PPTX path.
+  We consume it via `async for` and map each `ChatMessage` onto a streamed
+  `GenerateEvent`.
+* Jobs are kept in-memory with a TTL sweeper. A late-subscribing SSE client
+  gets the terminal event replayed so races between `POST /generate` and
+  `GET /generate/{id}/events` do not lose the final URL.
+* Paths from the client (`attachments`, `output_name`) are sanitized before
+  they are ever handed to the untrusted filesystem-touching upstream code.
 """
 
 from __future__ import annotations
@@ -20,11 +21,12 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import re
 import time
 import uuid
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Any, AsyncIterator, Callable
+from pathlib import Path, PurePosixPath
+from typing import Any, AsyncIterator
 
 from ..schemas import GenerateEvent, GenerateRequest
 from ..settings import Settings, get_settings
@@ -32,27 +34,74 @@ from .supabase import StorageClient
 
 logger = logging.getLogger("api.bridge")
 
+# Keep terminal jobs around this long so reconnecting SSE clients can replay
+# the final event instead of hanging forever on a drained queue.
+_TERMINAL_JOB_TTL_SECONDS = 60 * 60  # 1h
+
 
 # ---------------------------------------------------------------------------
 # Runtime config assembly
 # ---------------------------------------------------------------------------
 
-def build_runtime_config(req: GenerateRequest, settings: Settings) -> dict[str, Any]:
-    """Produce the dict that deeppresenter's config loader would normally read.
+def _sanitize_filename(name: str, default: str = "presentation.pptx") -> str:
+    """Return a filename safe to concatenate into a storage path.
 
-    Every model section points at the Supabase Edge Function, so the API key
-    used by the underlying OpenAI client is the Supabase service-role JWT.
-    The *actual* Google API key never leaves Supabase.
+    Strips directory components, replaces anything outside the allowlist,
+    and enforces a maximum length. Rejects empty results.
+    """
+    if not name:
+        return default
+    # `PurePosixPath.name` handles both "../foo" and "C:\\bar" by taking the
+    # final component.
+    bare = PurePosixPath(name.replace("\\", "/")).name or default
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", bare)[:120]
+    return safe or default
+
+
+def _sanitize_attachment_ref(ref: str) -> str:
+    """Accept only `uploads/<segment>` style references from the client.
+
+    The client is expected to upload attachments through `/generate/attachment`,
+    which returns a relative object path under `uploads/`. We refuse anything
+    else to stop the client from forcing the bridge to read `/etc/passwd`.
+    """
+    if not ref:
+        raise ValueError("empty attachment reference")
+    clean = ref.replace("\\", "/").lstrip("/")
+    parts = PurePosixPath(clean).parts
+    if not parts or parts[0] not in ("uploads", "demo"):
+        raise ValueError(f"attachment reference {ref!r} is not under uploads/")
+    if any(p in ("..", "") for p in parts):
+        raise ValueError(f"attachment reference {ref!r} contains a traversal segment")
+    return str(PurePosixPath(*parts))
+
+
+def build_runtime_config(
+    req: GenerateRequest,
+    settings: Settings,
+    workspace: Path,
+) -> dict[str, Any]:
+    """Produce the dict that `DeepPresenterConfig.model_validate` expects.
+
+    Every LLM section points at the Supabase Edge Function, so the OpenAI
+    client inside deeppresenter authenticates as the Supabase service-role
+    JWT and the real Google key stays out of this process.
     """
     edge_url = settings.supabase_edge_function_url.rstrip("/")
     base_url = edge_url or "http://localhost:54321/functions/v1/llm-proxy"
-    api_key = settings.supabase_service_role_key or "anon"
+    api_key = settings.supabase_service_role_key
+    if not api_key:
+        # Fail loudly rather than silently using a fake token.
+        raise RuntimeError("SUPABASE_SERVICE_ROLE_KEY is not configured")
 
     def section(model_id: str) -> dict[str, Any]:
         return {"base_url": base_url, "model": model_id, "api_key": api_key}
 
     m = req.models
     cfg: dict[str, Any] = {
+        # `file_path` is required by DeepPresenterConfig even though we load the
+        # config from memory; point it at a sentinel inside the workspace.
+        "file_path": str(workspace / "runtime-config.yaml"),
         "offline_mode": settings.offline_mode,
         "context_folding": True,
         "research_agent": section(m.research_agent or settings.default_chat_model),
@@ -69,7 +118,7 @@ def build_runtime_config(req: GenerateRequest, settings: Settings) -> dict[str, 
 
 
 # ---------------------------------------------------------------------------
-# Job orchestration
+# Job bookkeeping
 # ---------------------------------------------------------------------------
 
 @dataclass
@@ -81,26 +130,91 @@ class Job:
     task: asyncio.Task | None = None
     status: str = "queued"
     created_at: float = field(default_factory=time.time)
+    finished_at: float | None = None
+    # Replay buffer so late subscribers see the whole stream.
+    history: list[GenerateEvent] = field(default_factory=list)
 
 
 class BridgeError(RuntimeError):
     """Raised when the PPTAgent runtime is unavailable."""
 
 
+# ---------------------------------------------------------------------------
+# ChatMessage → GenerateEvent mapping
+# ---------------------------------------------------------------------------
+
+def _infer_stage(text: str, default: str) -> str:
+    t = text.lower()
+    if "research" in t or "manuscript" in t or "outline" in t:
+        return "research"
+    if "design" in t or "slide" in t or "html" in t:
+        return "design"
+    if "pptx" in t or "html2pptx" in t or "convert" in t:
+        return "render"
+    return default
+
+
+def _message_to_event(job_id: str, msg: Any, *, stage: str = "log") -> GenerateEvent:
+    """Best-effort translation of a deeppresenter ChatMessage into our schema.
+
+    We don't import ChatMessage directly to keep this file importable without
+    deeppresenter at hand (so `/health` and `/models` still work on a clean
+    install).
+    """
+    text = getattr(msg, "text", None)
+    role = getattr(getattr(msg, "role", None), "value", None) or "system"
+    if text is None:
+        text = str(msg)
+    resolved_stage = _infer_stage(text, stage)
+    return GenerateEvent(
+        job_id=job_id,
+        stage=resolved_stage,  # type: ignore[arg-type]
+        message=text[:400],
+    )
+
+
+# ---------------------------------------------------------------------------
+# Bridge
+# ---------------------------------------------------------------------------
+
 class AgentBridge:
-    """Owns live jobs and drives deeppresenter.main.AgentLoop."""
+    """Owns live jobs and drives `deeppresenter.main.AgentLoop`."""
 
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or get_settings()
         self._jobs: dict[str, Job] = {}
         self._storage = StorageClient(self.settings)
+        self._sweeper_task: asyncio.Task | None = None
+
+    async def start_background_tasks(self) -> None:
+        if self._sweeper_task is None or self._sweeper_task.done():
+            self._sweeper_task = asyncio.create_task(self._ttl_sweeper(), name="ttl-sweeper")
+
+    async def _ttl_sweeper(self) -> None:
+        """Evict terminal jobs older than TTL so memory doesn't grow forever."""
+        while True:
+            try:
+                await asyncio.sleep(300)
+                cutoff = time.time() - _TERMINAL_JOB_TTL_SECONDS
+                drop = [
+                    jid for jid, j in self._jobs.items()
+                    if j.finished_at is not None and j.finished_at < cutoff
+                ]
+                for jid in drop:
+                    self._jobs.pop(jid, None)
+                if drop:
+                    logger.info("evicted %d terminal jobs", len(drop))
+            except asyncio.CancelledError:
+                return
+            except Exception:  # noqa: BLE001 - sweeper must never die
+                logger.exception("sweeper iteration failed")
 
     # ------------------------------------------------------------------
-    # Lifecycle
+    # Job lifecycle
     # ------------------------------------------------------------------
 
     def start(self, request: GenerateRequest) -> Job:
-        job_id = uuid.uuid4().hex[:12]
+        job_id = uuid.uuid4().hex
         workspace = self.settings.workspace_base / job_id
         workspace.mkdir(parents=True, exist_ok=True)
         job = Job(job_id=job_id, request=request, workspace=workspace)
@@ -112,24 +226,36 @@ class AgentBridge:
         return self._jobs.get(job_id)
 
     # ------------------------------------------------------------------
-    # Event streaming
+    # Event streaming with replay
     # ------------------------------------------------------------------
 
     async def events(self, job_id: str) -> AsyncIterator[GenerateEvent]:
         job = self._jobs.get(job_id)
         if not job:
             return
+        # Replay everything the job has already emitted.
+        for ev in list(job.history):
+            yield ev
+            if ev.stage in ("done", "error"):
+                return
         while True:
-            ev = await job.queue.get()
+            try:
+                ev = await asyncio.wait_for(job.queue.get(), timeout=300)
+            except asyncio.TimeoutError:
+                # Send a keepalive-ish log event so intermediaries don't kill
+                # the SSE socket during a long silent deeppresenter phase.
+                yield GenerateEvent(job_id=job_id, stage="log", message="(heartbeat)")
+                continue
             yield ev
             if ev.stage in ("done", "error"):
                 break
 
     async def _emit(self, job: Job, ev: GenerateEvent) -> None:
+        job.history.append(ev)
         await job.queue.put(ev)
 
     # ------------------------------------------------------------------
-    # Actual work
+    # Execution
     # ------------------------------------------------------------------
 
     async def _run(self, job: Job) -> None:
@@ -139,28 +265,76 @@ class AgentBridge:
                 job,
                 GenerateEvent(job_id=job.job_id, stage="log", message="job queued"),
             )
-            config = build_runtime_config(job.request, self.settings)
 
-            loop = asyncio.get_running_loop()
-
-            def progress_hook(stage: str, message: str, percent: float | None = None) -> None:
-                ev = GenerateEvent(
-                    job_id=job.job_id,
-                    stage=stage,  # type: ignore[arg-type]
-                    message=message,
-                    percent=percent,
+            try:
+                from deeppresenter.main import AgentLoop  # type: ignore
+                from deeppresenter.utils.config import DeepPresenterConfig  # type: ignore
+                from deeppresenter.utils.typings import (  # type: ignore
+                    ConvertType,
+                    InputRequest,
                 )
-                loop.call_soon_threadsafe(job.queue.put_nowait, ev)
+            except Exception as exc:  # pragma: no cover - surfaced to client
+                raise BridgeError(
+                    "deeppresenter is not importable. Install with "
+                    "`uv pip install -e .` inside WSL2 and ensure Docker "
+                    "Desktop is running."
+                ) from exc
 
-            pptx_path = await asyncio.to_thread(
-                _run_agent_loop_sync,
-                job=job,
-                config=config,
-                progress_hook=progress_hook,
+            config_dict = build_runtime_config(job.request, self.settings, job.workspace)
+            config = DeepPresenterConfig.model_validate(config_dict)
+
+            # Sanitize every attachment path - the upstream layer will copy
+            # these files into the workspace, so a traversal would let a
+            # client read arbitrary files off the FastAPI host.
+            try:
+                clean_attachments = [
+                    _sanitize_attachment_ref(p) for p in job.request.attachments
+                ]
+            except ValueError as exc:
+                raise BridgeError(str(exc)) from exc
+            # Resolve to absolute filesystem paths under the workspace.
+            resolved = [str((job.workspace / rel).resolve()) for rel in clean_attachments]
+
+            request = InputRequest(
+                instruction=job.request.prompt,
+                attachments=resolved,
+                num_pages=job.request.pages,
+                convert_type=ConvertType.PPTAGENT,
             )
 
-            # Upload to Supabase Storage and emit signed URL
-            object_path = f"{job.job_id}/{job.request.output_name}"
+            loop_impl = AgentLoop(
+                config=config,
+                session_id=job.job_id[:8],
+                workspace=job.workspace,
+                language="ko",
+            )
+
+            await self._emit(
+                job,
+                GenerateEvent(
+                    job_id=job.job_id,
+                    stage="research",
+                    message="AgentLoop started",
+                    percent=0.05,
+                ),
+            )
+
+            final_path: Path | None = None
+            current_stage = "research"
+            async for msg in loop_impl.run(request):
+                if isinstance(msg, (str, Path)):
+                    final_path = Path(msg)
+                    break
+                ev = _message_to_event(job.job_id, msg, stage=current_stage)
+                current_stage = ev.stage  # advance
+                await self._emit(job, ev)
+
+            if final_path is None or not final_path.exists():
+                raise BridgeError("AgentLoop exited without producing a PPTX file")
+
+            # Upload and emit terminal event
+            safe_name = _sanitize_filename(job.request.output_name, "presentation.pptx")
+            object_path = f"{job.job_id}/{safe_name}"
             await self._emit(
                 job,
                 GenerateEvent(
@@ -171,7 +345,7 @@ class AgentBridge:
                 ),
             )
             await self._storage.upload_file(
-                pptx_path,
+                final_path,
                 object_path,
                 "application/vnd.openxmlformats-officedocument.presentationml.presentation",
             )
@@ -191,60 +365,32 @@ class AgentBridge:
         except Exception as exc:  # noqa: BLE001 - surfaced to client
             logger.exception("job %s failed", job.job_id)
             job.status = "failed"
+            # Don't leak raw exception text; callers see a generic code, full
+            # detail is in the server log above.
+            safe_msg = (
+                str(exc)
+                if isinstance(exc, BridgeError)
+                else "generation failed - see server log"
+            )
             await self._emit(
                 job,
                 GenerateEvent(
                     job_id=job.job_id,
                     stage="error",
                     message="generation failed",
-                    error=str(exc),
+                    error=safe_msg,
                 ),
             )
+        finally:
+            job.finished_at = time.time()
 
     async def close(self) -> None:
-        for job in self._jobs.values():
+        if self._sweeper_task and not self._sweeper_task.done():
+            self._sweeper_task.cancel()
+            with contextlib.suppress(Exception):
+                await self._sweeper_task
+        for job in list(self._jobs.values()):
             if job.task and not job.task.done():
                 job.task.cancel()
                 with contextlib.suppress(Exception):
                     await job.task
-
-
-# ---------------------------------------------------------------------------
-# Sync entrypoint that actually drives deeppresenter
-# ---------------------------------------------------------------------------
-
-def _run_agent_loop_sync(
-    *,
-    job: Job,
-    config: dict[str, Any],
-    progress_hook: Callable[[str, str, float | None], None],
-) -> Path:
-    """Import deeppresenter lazily and execute a single run.
-
-    Kept in a regular function so `asyncio.to_thread` can own it. If the import
-    fails (e.g. the user hasn't installed the extras yet), we raise a
-    `BridgeError` that the async layer turns into a streamed error event.
-    """
-    try:
-        from deeppresenter.main import AgentLoop  # type: ignore
-        from deeppresenter.utils.config import RuntimeConfig  # type: ignore
-    except Exception as exc:  # pragma: no cover - surfaced to user
-        raise BridgeError(
-            "deeppresenter is not importable. Install with `uv pip install -e .` "
-            "inside WSL2 and ensure Docker Desktop is running."
-        ) from exc
-
-    progress_hook("research", "starting research phase", 0.05)
-
-    runtime_config = RuntimeConfig.model_validate(config)
-    loop = AgentLoop(
-        prompt=job.request.prompt,
-        attachments=[Path(p) for p in job.request.attachments],
-        pages=job.request.pages,
-        workspace=job.workspace,
-        config=runtime_config,
-        progress_hook=progress_hook,  # optional; deeppresenter falls back if unused
-    )
-    pptx_path = loop.run(output_name=job.request.output_name)
-    progress_hook("export", "finalising PPTX", 0.9)
-    return Path(pptx_path)
