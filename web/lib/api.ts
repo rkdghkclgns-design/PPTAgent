@@ -181,10 +181,44 @@ export function streamEvents(
   };
 }
 
-export async function uploadAttachment(file: File): Promise<{ object_path: string; signed_url: string }> {
-  const body = new FormData();
-  body.append("file", file);
-  const res = await fetch(url("/generate/attachment"), { method: "POST", body });
-  if (!res.ok) throw new Error(`upload failed: ${res.status}`);
-  return res.json();
+/**
+ * Upload an attachment to Supabase Storage WITHOUT round-tripping through
+ * the FastAPI server.
+ *
+ * Flow:
+ *   1. Ask FastAPI for a short-lived signed upload URL.
+ *   2. PUT the raw bytes straight to Supabase Storage from the browser.
+ *   3. Return the stable object_path so the caller can pass it to
+ *      POST /generate as one of its `attachments`.
+ *
+ * Bandwidth through Fly is zero for the file body. The legacy
+ * /generate/attachment endpoint is still there for older clients.
+ */
+export async function uploadAttachment(file: File): Promise<{ object_path: string }> {
+  const signRes = await fetch(url("/generate/upload-sign"), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      filename: file.name,
+      content_type: file.type || "application/octet-stream",
+      size_hint: file.size,
+    }),
+  });
+  if (!signRes.ok) {
+    const text = await signRes.text();
+    throw new Error(`sign failed: ${signRes.status} ${text}`);
+  }
+  const { object_path, upload_url } = (await signRes.json()) as {
+    object_path: string;
+    upload_url: string;
+  };
+  const putRes = await fetch(upload_url, {
+    method: "PUT",
+    headers: { "content-type": file.type || "application/octet-stream" },
+    body: file,
+  });
+  if (!putRes.ok) {
+    throw new Error(`storage PUT failed: ${putRes.status}`);
+  }
+  return { object_path };
 }

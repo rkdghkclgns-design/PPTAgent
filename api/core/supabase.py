@@ -96,3 +96,26 @@ class StorageClient:
     async def upload_file(self, local_path: Path, object_path: str, content_type: str) -> str:
         data = await asyncio.to_thread(local_path.read_bytes)
         return await self.upload(object_path, data, content_type)
+
+    async def signed_upload_url(self, object_path: str) -> dict[str, str]:
+        """Create a short-lived signed PUT URL so the browser uploads directly.
+
+        Returns both the absolute URL the client should PUT to and the
+        object_path the caller eventually references in a /generate request.
+        """
+        url = f"{self._base}/object/upload/sign/{self.settings.supabase_storage_bucket}/{object_path}"
+        headers = {
+            "Authorization": f"Bearer {self.settings.supabase_service_role_key}",
+            "apikey": self.settings.supabase_service_role_key,
+            "content-type": "application/json",
+        }
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            res = await client.post(url, json={}, headers=headers)
+        res.raise_for_status()
+        body = res.json()
+        signed = body.get("url") or body.get("signedURL") or body.get("signedUrl")
+        if not signed:
+            raise RuntimeError(f"unexpected signed upload response: {body}")
+        if signed.startswith("/"):
+            signed = f"{self.settings.supabase_url}/storage/v1{signed}"
+        return {"upload_url": signed, "object_path": object_path}

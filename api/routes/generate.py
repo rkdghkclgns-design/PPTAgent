@@ -14,6 +14,7 @@ import uuid
 from typing import AsyncIterator
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
+from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
 
 from ..core import AgentBridge
@@ -101,22 +102,55 @@ async def websocket_events(
             await websocket.close()
 
 
-@router.post("/attachment", tags=["generate"])
+class SignUploadRequest(BaseModel):
+    filename: str = Field(..., min_length=1, max_length=256)
+    content_type: str = Field(default="application/octet-stream", max_length=128)
+    size_hint: int | None = Field(default=None, ge=0)
+
+
+class SignUploadResponse(BaseModel):
+    object_path: str
+    upload_url: str
+
+
+@router.post("/upload-sign", response_model=SignUploadResponse, tags=["generate"])
+async def sign_upload(
+    body: SignUploadRequest,
+    settings: Settings = Depends(get_settings),
+    _auth: dict = Depends(require_auth),
+) -> SignUploadResponse:
+    """Issue a short-lived signed upload URL so the browser PUTs directly to
+    Supabase Storage. The server never buffers the file bytes."""
+    from ..core.supabase import StorageClient
+
+    limit = settings.max_upload_mb * 1024 * 1024
+    if body.size_hint is not None and body.size_hint > limit:
+        raise HTTPException(status_code=413, detail="attachment too large")
+
+    name = _safe_filename(body.filename)
+    object_path = f"uploads/{uuid.uuid4().hex[:12]}/{name}"
+    client = StorageClient(settings)
+    signed = await client.signed_upload_url(object_path)
+    return SignUploadResponse(
+        object_path=signed["object_path"],
+        upload_url=signed["upload_url"],
+    )
+
+
+@router.post("/attachment", tags=["generate"], deprecated=True)
 async def upload_attachment(
     file: UploadFile,
     settings: Settings = Depends(get_settings),
     _auth: dict = Depends(require_auth),
 ) -> dict[str, str]:
-    """Accept a user attachment and forward it to Supabase Storage.
+    """Legacy server-through upload.
 
-    The client-supplied filename is sanitized and prefixed with a server-
-    generated UUID, so a malicious actor can't overwrite other objects or
-    escape the `uploads/` namespace.
+    Kept for backwards compatibility with clients that can't switch to the
+    signed-URL flow yet. Prefer POST /generate/upload-sign.
     """
     from ..core.supabase import StorageClient
 
     limit = settings.max_upload_mb * 1024 * 1024
-    # Stream-read with a hard cap - don't rely on declared Content-Length.
     data = await file.read(limit + 1)
     if len(data) > limit:
         raise HTTPException(status_code=413, detail="attachment too large")

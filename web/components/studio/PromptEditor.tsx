@@ -65,10 +65,10 @@ export function PromptEditor() {
           continue;
         }
         try {
-          const result = await uploadAttachment(file);
+          const { object_path } = await uploadAttachment(file);
           addAttachment({
             name: file.name,
-            objectPath: result.object_path,
+            objectPath: object_path,
             size: file.size,
           });
         } catch (err) {
