@@ -15,7 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, WebSocket, We
 from sse_starlette.sse import EventSourceResponse
 
 from ..core import AgentBridge
-from ..schemas import GenerateEvent, GenerateJob, GenerateRequest
+from ..schemas import GenerateJob, GenerateRequest
 from ..settings import Settings, get_settings
 from .deps import get_bridge
 
