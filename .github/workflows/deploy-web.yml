@@ -13,15 +13,9 @@
 name: Deploy web → Vercel
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - "web/**"
-      - ".github/workflows/deploy-web.yml"
-  pull_request:
-    paths:
-      - "web/**"
-      - ".github/workflows/deploy-web.yml"
+  # Deliberately manual-only. GitHub Pages (deploy-pages.yml) is the default
+  # frontend host; Vercel is available as a hot-swap backup you can invoke
+  # from the Actions tab or via `gh workflow run deploy-web.yml`.
   workflow_dispatch:
     inputs:
       environment:

@@ -8,8 +8,18 @@
 
 import type { ModelSlot } from "./models";
 
+/**
+ * Resolve the FastAPI origin.
+ *
+ * - In dev we can use the relative `/proxy` path because next.config.mjs
+ *   rewrites it to `http://localhost:7870`.
+ * - In `next export` builds (GitHub Pages), rewrites are ignored, so
+ *   NEXT_PUBLIC_API_ORIGIN must be a fully qualified URL baked in at
+ *   build time.
+ */
 const DEFAULT_API_ORIGIN =
-  process.env.NEXT_PUBLIC_API_ORIGIN || "/proxy";
+  process.env.NEXT_PUBLIC_API_ORIGIN ||
+  (process.env.NODE_ENV === "production" ? "" : "/proxy");
 
 export type ModelOverrides = Partial<Record<ModelSlot, string>>;
 

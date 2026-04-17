@@ -1,0 +1,90 @@
+# Deploy the Next.js studio to GitHub Pages as a static site.
+#
+# Why separate from deploy-web.yml?
+#   deploy-web.yml targets Vercel (preview + prod). GitHub Pages is an
+#   alternative, zero-cost host that serves the `next export` output. You can
+#   run both if you want redundancy.
+#
+# Public URL: https://rkdghkclgns-design.github.io/PPTAgent/
+#
+# Repo prerequisites (one-time):
+#   Settings → Pages → Source = "GitHub Actions"
+#   (screenshot state: already done ✅)
+#
+# Required secrets:
+#   NEXT_PUBLIC_API_ORIGIN          full URL of the FastAPI deployment
+#   NEXT_PUBLIC_SUPABASE_URL        https://<ref>.supabase.co
+#   NEXT_PUBLIC_SUPABASE_ANON_KEY   anon key (public - safe in the bundle)
+#
+# No Vercel tokens here - GitHub Pages uses GITHUB_TOKEN implicitly.
+name: Deploy web → GitHub Pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "web/**"
+      - ".github/workflows/deploy-pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build static site
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: web/package.json
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+        with:
+          static_site_generator: next
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Build (static export)
+        env:
+          DEPLOY_TARGET: pages
+          NODE_ENV: production
+          NEXT_PUBLIC_API_ORIGIN: ${{ secrets.NEXT_PUBLIC_API_ORIGIN }}
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+        run: |
+          npm run build
+          # GitHub Pages refuses `_next/*` paths unless we turn off Jekyll.
+          touch out/.nojekyll
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: web/out
+
+  deploy:
+    name: Publish to Pages
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
