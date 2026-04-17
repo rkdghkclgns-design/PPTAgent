@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useDropzone } from "react-dropzone";
 import { FileText, Paperclip, Play, Sparkles, X } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
@@ -9,7 +9,13 @@ import { toast } from "sonner";
 import { MotionButton } from "@/components/common/MotionButton";
 import { ModelSelector } from "@/components/studio/ModelSelector";
 import { useStudioStore } from "@/lib/store";
-import { createJob, isApiReachable, streamEvents, uploadAttachment } from "@/lib/api";
+import {
+  createJob,
+  isApiReachable,
+  streamEvents,
+  uploadAttachment,
+  type EventStreamHandle,
+} from "@/lib/api";
 import { createDemoJob, runDemoJob } from "@/lib/demo";
 import { cn, formatBytes } from "@/lib/utils";
 
@@ -33,6 +39,16 @@ export function PromptEditor() {
   const job = useStudioStore((s) => s.job);
 
   const [submitting, setSubmitting] = useState(false);
+  const streamRef = useRef<EventStreamHandle | null>(null);
+
+  // Abort any live SSE stream when the Studio unmounts. Without this the
+  // EventSource keeps firing events into the now-gone Zustand subscribers.
+  useEffect(() => {
+    return () => {
+      streamRef.current?.abort();
+      streamRef.current = null;
+    };
+  }, []);
 
   const onDrop = useCallback(
     async (files: File[]) => {
@@ -117,7 +133,9 @@ export function PromptEditor() {
         output_name: `pptagent-${Date.now()}.pptx`,
       });
       setJob(created);
-      streamEvents(
+      // Replace any previous handle so reruns don't leak EventSources.
+      streamRef.current?.abort();
+      streamRef.current = streamEvents(
         created.job_id,
         (ev) => {
           appendEvent(ev);
