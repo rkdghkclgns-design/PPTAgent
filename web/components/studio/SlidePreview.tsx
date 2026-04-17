@@ -20,6 +20,8 @@ export function SlidePreview() {
   const error = useStudioStore((s) => s.error);
   const prompt = useStudioStore((s) => s.prompt);
   const sampleMode = useStudioStore((s) => s.sampleMode);
+  const provider = useStudioStore((s) => s.provider);
+  const providerNote = useStudioStore((s) => s.providerNote);
 
   const [zoomOpen, setZoomOpen] = useState(false);
   const [downloading, setDownloading] = useState(false);
@@ -65,7 +67,7 @@ export function SlidePreview() {
       </header>
 
       <div className="flex flex-1 flex-col gap-4 overflow-y-auto scrollbar-slim p-5">
-        {sampleMode && (
+        {provider === "sample" && (
           <motion.div
             initial={{ opacity: 0, y: -4 }}
             animate={{ opacity: 1, y: 0 }}
@@ -73,8 +75,21 @@ export function SlidePreview() {
           >
             <p className="font-semibold">샘플 모드</p>
             <p className="mt-1 text-sunrise/80">
-              GOOGLE_API_KEY 가 Supabase Secrets 에 등록되어 있지 않아 샘플 슬라이드를 반환했습니다.
-              키 등록 후 다시 실행하면 실제 AI 생성이 시작됩니다.
+              {providerNote ??
+                "Supabase 에 API 키가 구성되지 않아 샘플 슬라이드를 반환했습니다. 키 등록 후 자동으로 실제 AI 생성으로 전환됩니다."}
+            </p>
+          </motion.div>
+        )}
+        {provider === "anthropic" && (
+          <motion.div
+            initial={{ opacity: 0, y: -4 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="rounded-2xl border border-electron/40 bg-electron/10 px-4 py-3 text-xs text-electron"
+          >
+            <p className="font-semibold">Anthropic Claude</p>
+            <p className="mt-1 text-electron/80">
+              {providerNote ??
+                "Claude 가 텍스트를 생성하고, 커버는 프로시저럴 그라디언트로 대체됐습니다. 실제 AI 이미지는 GOOGLE_API_KEY 를 등록해 주세요."}
             </p>
           </motion.div>
         )}

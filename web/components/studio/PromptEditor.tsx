@@ -114,11 +114,19 @@ export function PromptEditor() {
         models: overrides,
         attachments: attachments.map(({ id: _id, size: _size, ...payload }) => payload),
       });
-      setSlides(result.slides, result.sample_mode ?? false);
+      setSlides(result.slides, {
+        provider: result.provider,
+        note: result.note ?? null,
+        sampleMode: result.sample_mode ?? result.provider === "sample",
+      });
       succeed();
-      if (result.sample_mode) {
-        toast.message("샘플 모드로 생성됨", {
-          description: "실제 AI 응답을 받으려면 Supabase에 GOOGLE_API_KEY 를 등록해 주세요.",
+      if (result.provider === "sample") {
+        toast.message("샘플 모드", {
+          description: result.note ?? "API 키가 구성되지 않아 샘플 슬라이드를 반환했습니다.",
+        });
+      } else if (result.provider === "anthropic") {
+        toast.success(`Claude 로 ${result.slide_count}장 생성 · 커버는 그라디언트`, {
+          description: result.note ?? undefined,
         });
       } else {
         toast.success(`${result.slide_count}장 슬라이드 생성 완료`);

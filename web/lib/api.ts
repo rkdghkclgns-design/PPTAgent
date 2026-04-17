@@ -47,11 +47,17 @@ export interface SlideData {
   imageUrl?: string;
 }
 
+export type GenerateProvider = "google" | "anthropic" | "sample";
+
 export interface GenerateResult {
   slide_count: number;
   slides: SlideData[];
-  /** True when the Edge Function returned deterministic sample slides because
-   *  GOOGLE_API_KEY isn't configured. */
+  /** Which backend actually produced the content. */
+  provider: GenerateProvider;
+  /** Human-readable note - most useful when provider === "sample" and we
+   *  need to surface the underlying API failure. */
+  note?: string;
+  /** Back-compat alias. Older callers used sample_mode instead of provider. */
   sample_mode?: boolean;
 }
 
@@ -107,6 +113,8 @@ export async function generateDeck(req: GenerateRequest): Promise<GenerateResult
   }
   const json = (await res.json()) as {
     slide_count: number;
+    provider?: GenerateProvider;
+    note?: string;
     sample_mode?: boolean;
     slides: Array<{
       title: string;
@@ -117,15 +125,34 @@ export async function generateDeck(req: GenerateRequest): Promise<GenerateResult
     }>;
   };
 
-  const slides: SlideData[] = json.slides.map((s, i) => ({
-    index: i,
-    title: s.title,
-    bullets: s.bullets ?? [],
-    notes: s.notes,
-    imagePrompt: s.imagePrompt,
-    imageUrl: s.imageB64 ? `data:image/png;base64,${s.imageB64}` : undefined,
-  }));
-  return { slide_count: json.slide_count, slides, sample_mode: json.sample_mode ?? false };
+  // Anthropic returns SVG covers; Google returns PNG. Use a generic
+  // image/* data URL so the browser sniffs by content.
+  const slides: SlideData[] = json.slides.map((s, i) => {
+    let url: string | undefined;
+    if (s.imageB64) {
+      const isSvg = s.imageB64.startsWith("PD94bWwg") || s.imageB64.startsWith("PHN2Zy");
+      url = isSvg
+        ? `data:image/svg+xml;base64,${s.imageB64}`
+        : `data:image/png;base64,${s.imageB64}`;
+    }
+    return {
+      index: i,
+      title: s.title,
+      bullets: s.bullets ?? [],
+      notes: s.notes,
+      imagePrompt: s.imagePrompt,
+      imageUrl: url,
+    };
+  });
+
+  const provider: GenerateProvider = json.provider ?? (json.sample_mode ? "sample" : "google");
+  return {
+    slide_count: json.slide_count,
+    slides,
+    provider,
+    note: json.note,
+    sample_mode: provider === "sample",
+  };
 }
 
 // ---------------------------------------------------------------------------

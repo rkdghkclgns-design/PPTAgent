@@ -3,7 +3,12 @@
 import { create } from "zustand";
 
 import { DEFAULT_MODELS, type ModelSlot } from "./models";
-import type { AttachmentPayload, ModelOverrides, SlideData } from "./api";
+import type {
+  AttachmentPayload,
+  GenerateProvider,
+  ModelOverrides,
+  SlideData,
+} from "./api";
 
 export type JobStatus = "idle" | "running" | "succeeded" | "failed";
 
@@ -28,6 +33,8 @@ interface StudioState {
   progress: number;
   error: string | null;
   sampleMode: boolean;
+  provider: GenerateProvider | null;
+  providerNote: string | null;
   pptxUrl: string | null;
 
   setPrompt: (value: string) => void;
@@ -40,7 +47,10 @@ interface StudioState {
 
   beginJob: () => void;
   updateProgress: (percent: number) => void;
-  setSlides: (slides: SlideData[], sampleMode?: boolean) => void;
+  setSlides: (
+    slides: SlideData[],
+    meta?: { provider?: GenerateProvider; note?: string | null; sampleMode?: boolean },
+  ) => void;
   setActiveSlide: (index: number) => void;
   succeed: (pptxUrl?: string | null) => void;
   fail: (error: string) => void;
@@ -60,6 +70,8 @@ const initial = {
   progress: 0,
   error: null as string | null,
   sampleMode: false,
+  provider: null as GenerateProvider | null,
+  providerNote: null as string | null,
   pptxUrl: null as string | null,
 };
 
@@ -84,12 +96,20 @@ export const useStudioStore = create<StudioState>((set) => ({
       progress: 0,
       error: null,
       sampleMode: false,
+      provider: null,
+      providerNote: null,
       pptxUrl: null,
     }),
   updateProgress: (percent) =>
     set((s) => ({ progress: Math.max(s.progress, Math.min(1, percent)) })),
-  setSlides: (slides, sampleMode = false) =>
-    set({ slides, activeSlide: 0, sampleMode }),
+  setSlides: (slides, meta) =>
+    set({
+      slides,
+      activeSlide: 0,
+      sampleMode: meta?.sampleMode ?? meta?.provider === "sample" ?? false,
+      provider: meta?.provider ?? null,
+      providerNote: meta?.note ?? null,
+    }),
   setActiveSlide: (index) => set({ activeSlide: index }),
   succeed: (pptxUrl) => set({ status: "succeeded", progress: 1, pptxUrl: pptxUrl ?? null }),
   fail: (error) => set({ status: "failed", error }),
