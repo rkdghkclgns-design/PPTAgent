@@ -123,32 +123,62 @@ export async function createJob(req: GenerateRequest): Promise<GenerateJob> {
 }
 
 /**
- * Subscribe to SSE events for a running job. Returns an AbortController whose
- * `abort()` method cleanly tears down the connection.
+ * Subscribe to SSE events for a running job.
+ *
+ * Returns a handle with two ways to stop: `.abort()` (AbortController-like
+ * surface) and the underlying `.source` for callers that want to inspect
+ * `readyState`. Calling `.abort()` is idempotent and safe to run inside a
+ * React useEffect cleanup even after the stream has already ended.
+ *
+ * A terminal event (`done` or `error`) closes the stream on its own, but
+ * clients should STILL call `.abort()` on unmount to cover the case where
+ * the component is torn down mid-flight.
  */
+export interface EventStreamHandle {
+  abort: () => void;
+  readonly aborted: boolean;
+  readonly source: EventSource;
+}
+
 export function streamEvents(
   jobId: string,
   onEvent: (ev: GenerateEvent) => void,
   onError?: (err: unknown) => void,
-): AbortController {
-  const controller = new AbortController();
-  const evs = new EventSource(url(`/generate/${jobId}/events`));
+): EventStreamHandle {
+  const source = new EventSource(url(`/generate/${jobId}/events`));
+  let aborted = false;
 
-  evs.onmessage = (e) => {
+  const close = () => {
+    if (aborted) return;
+    aborted = true;
+    source.close();
+  };
+
+  source.onmessage = (e) => {
+    if (aborted) return;
     try {
       const payload: GenerateEvent = JSON.parse(e.data);
       onEvent(payload);
-      if (payload.stage === "done" || payload.stage === "error") evs.close();
+      if (payload.stage === "done" || payload.stage === "error") close();
     } catch (err) {
       onError?.(err);
     }
   };
-  evs.onerror = (err) => {
+  source.onerror = (err) => {
+    if (aborted) return;
     onError?.(err);
-    evs.close();
+    close();
   };
-  controller.signal.addEventListener("abort", () => evs.close(), { once: true });
-  return controller;
+
+  return {
+    abort: close,
+    get aborted() {
+      return aborted;
+    },
+    get source() {
+      return source;
+    },
+  };
 }
 
 export async function uploadAttachment(file: File): Promise<{ object_path: string; signed_url: string }> {
