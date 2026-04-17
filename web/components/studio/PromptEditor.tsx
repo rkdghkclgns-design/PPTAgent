@@ -1,95 +1,41 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
-import { useDropzone } from "react-dropzone";
-import { FileText, Paperclip, Play, Sparkles, X } from "lucide-react";
-import { motion, AnimatePresence } from "framer-motion";
+import { useState } from "react";
+import { ImageIcon, Play, Sparkles, Wand2 } from "lucide-react";
+import { motion } from "framer-motion";
 import { toast } from "sonner";
 
 import { MotionButton } from "@/components/common/MotionButton";
 import { ModelSelector } from "@/components/studio/ModelSelector";
 import { useStudioStore } from "@/lib/store";
-import {
-  createJob,
-  isApiReachable,
-  streamEvents,
-  uploadAttachment,
-  type EventStreamHandle,
-} from "@/lib/api";
-import { createDemoJob, runDemoJob } from "@/lib/demo";
-import { cn, formatBytes } from "@/lib/utils";
+import { generateDeck } from "@/lib/api";
+import { cn } from "@/lib/utils";
 
 const PROMPT_SUGGESTIONS = [
-  "AI 스타트업 투자 유치용 10장짜리 피치덱",
+  "AI 스타트업 투자 유치용 피치덱",
   "고등학생을 위한 기후변화 수업 슬라이드",
-  "Q2 프로덕트 OKR 리뷰 (차트 2개 포함)",
+  "Q2 프로덕트 OKR 리뷰 (차트 포함)",
 ];
 
 export function PromptEditor() {
   const prompt = useStudioStore((s) => s.prompt);
   const setPrompt = useStudioStore((s) => s.setPrompt);
-  const attachments = useStudioStore((s) => s.attachments);
-  const addAttachment = useStudioStore((s) => s.addAttachment);
-  const removeAttachment = useStudioStore((s) => s.removeAttachment);
-  const setJob = useStudioStore((s) => s.setJob);
-  const appendEvent = useStudioStore((s) => s.appendEvent);
+  const slideCount = useStudioStore((s) => s.slideCount);
+  const setSlideCount = useStudioStore((s) => s.setSlideCount);
+  const includeImages = useStudioStore((s) => s.includeImages);
+  const setIncludeImages = useStudioStore((s) => s.setIncludeImages);
+  const language = useStudioStore((s) => s.language);
+  const setLanguage = useStudioStore((s) => s.setLanguage);
   const overrides = useStudioStore((s) => s.overrides);
-  const pages = useStudioStore((s) => s.pages);
-  const setPages = useStudioStore((s) => s.setPages);
-  const job = useStudioStore((s) => s.job);
+
+  const status = useStudioStore((s) => s.status);
+  const beginJob = useStudioStore((s) => s.beginJob);
+  const setSlides = useStudioStore((s) => s.setSlides);
+  const updateProgress = useStudioStore((s) => s.updateProgress);
+  const succeed = useStudioStore((s) => s.succeed);
+  const fail = useStudioStore((s) => s.fail);
 
   const [submitting, setSubmitting] = useState(false);
-  const streamRef = useRef<EventStreamHandle | null>(null);
-
-  // Abort any live SSE stream when the Studio unmounts. Without this the
-  // EventSource keeps firing events into the now-gone Zustand subscribers.
-  useEffect(() => {
-    return () => {
-      streamRef.current?.abort();
-      streamRef.current = null;
-    };
-  }, []);
-
-  const onDrop = useCallback(
-    async (files: File[]) => {
-      const apiOk = await isApiReachable();
-      for (const file of files) {
-        if (!apiOk) {
-          // Demo mode: record the attachment client-side only. The real
-          // upload needs FastAPI + Supabase Storage, which aren't online yet.
-          addAttachment({
-            name: file.name,
-            objectPath: `demo/${file.name}`,
-            size: file.size,
-          });
-          continue;
-        }
-        try {
-          const { object_path } = await uploadAttachment(file);
-          addAttachment({
-            name: file.name,
-            objectPath: object_path,
-            size: file.size,
-          });
-        } catch (err) {
-          toast.error(`업로드 실패: ${file.name}`);
-          console.error(err);
-        }
-      }
-      if (!apiOk && files.length > 0) {
-        toast.message("데모 모드 · 첨부 파일은 기록만 됩니다", {
-          description: "실제 파싱은 FastAPI 가 연결된 뒤 수행됩니다.",
-        });
-      }
-    },
-    [addAttachment],
-  );
-
-  const { getRootProps, getInputProps, isDragActive } = useDropzone({
-    onDrop,
-    multiple: true,
-    maxSize: 50 * 1024 * 1024,
-  });
 
   async function handleGenerate() {
     if (prompt.trim().length < 2) {
@@ -97,67 +43,34 @@ export function PromptEditor() {
       return;
     }
     setSubmitting(true);
+    beginJob();
+    updateProgress(0.1);
 
-    // Small helper - runs the in-browser demo stream when we can't reach a
-    // real backend (or when the real backend returns anything other than 2xx).
-    const fallbackToPreview = async () => {
-      const demo = createDemoJob(prompt.trim());
-      setJob(demo);
-      await runDemoJob({
-        prompt: prompt.trim(),
-        jobId: demo.job_id,
-        onEvent: (ev) => {
-          appendEvent(ev);
-          if (ev.stage === "done") toast.success("미리보기 완료");
-        },
-      });
-    };
-
-    const apiOk = await isApiReachable();
-    if (!apiOk) {
-      try {
-        await fallbackToPreview();
-      } finally {
-        setSubmitting(false);
-      }
-      return;
-    }
+    // Rough progress heartbeat: Supabase call is monolithic so we fake a
+    // smooth climb to 0.9 while waiting, then snap to 1.0 on success.
+    const heartbeat = setInterval(() => {
+      const s = useStudioStore.getState();
+      if (s.progress < 0.9) useStudioStore.getState().updateProgress(s.progress + 0.03);
+    }, 800);
 
     try {
-      const created = await createJob({
+      const result = await generateDeck({
         prompt: prompt.trim(),
-        attachments: attachments.map((a) => a.objectPath),
-        pages: pages || undefined,
+        slideCount,
+        includeImages,
+        language,
         models: overrides,
-        output_name: `pptagent-${Date.now()}.pptx`,
       });
-      setJob(created);
-      // Replace any previous handle so reruns don't leak EventSources.
-      streamRef.current?.abort();
-      streamRef.current = streamEvents(
-        created.job_id,
-        (ev) => {
-          appendEvent(ev);
-          if (ev.stage === "error") toast.error(ev.error ?? ev.message);
-          if (ev.stage === "done") toast.success("PPTX 생성 완료!");
-        },
-        (err) => {
-          console.error(err);
-          toast.error("이벤트 스트림 연결이 끊어졌습니다.");
-        },
-      );
+      setSlides(result.slides);
+      succeed();
+      toast.success(`${result.slide_count}장 슬라이드 생성 완료`);
     } catch (err) {
-      // If the dedicated backend isn't wired up yet (very common in fresh
-      // deploys), drop quietly into the in-browser preview stream instead
-      // of shouting a red error at the user.
-      console.warn("createJob failed, falling back to preview:", err);
-      try {
-        await fallbackToPreview();
-      } catch (demoErr) {
-        console.error(demoErr);
-        toast.error("세션을 시작하지 못했습니다. 잠시 후 다시 시도해 주세요.");
-      }
+      console.error(err);
+      const message = err instanceof Error ? err.message : String(err);
+      fail(message);
+      toast.error(message);
     } finally {
+      clearInterval(heartbeat);
       setSubmitting(false);
     }
   }
@@ -173,8 +86,7 @@ export function PromptEditor() {
           어떤 발표 자료가 필요하신가요?
         </h1>
         <p className="mt-2 text-sm text-muted-foreground">
-          원하는 주제와 분량, 톤을 자유롭게 적어주세요. PDF·XLSX·이미지를 드래그해 첨부하면
-          본문에 포함됩니다.
+          주제를 자유롭게 적어주세요. 각 슬라이드의 제목·본문·참고 이미지가 함께 생성됩니다.
         </p>
       </header>
 
@@ -183,8 +95,8 @@ export function PromptEditor() {
         <textarea
           value={prompt}
           onChange={(e) => setPrompt(e.target.value)}
-          placeholder="예: Q2 프로덕트 OKR 리뷰를 CTO 보고용으로 10장, 표지 1장 포함, 영문 30% 혼용"
-          rows={6}
+          placeholder="예: 공유 오피스 사업의 2026년 성장 전략을 CTO 보고용으로"
+          rows={5}
           className="relative block w-full resize-none border-0 bg-transparent font-sans text-base leading-relaxed text-foreground placeholder:text-muted-foreground focus:outline-none"
         />
         <div className="relative mt-2 flex flex-wrap gap-2">
@@ -200,74 +112,105 @@ export function PromptEditor() {
         </div>
       </div>
 
-      <div
-        {...getRootProps()}
-        className={cn(
-          "glass relative flex min-h-[120px] cursor-pointer flex-col items-center justify-center rounded-3xl border border-dashed border-border/70 p-5 text-center text-sm text-muted-foreground transition",
-          isDragActive && "border-electron bg-electron/5 text-foreground",
-        )}
-      >
-        <input {...getInputProps()} />
-        <Paperclip className="mb-2 h-5 w-5" />
-        {isDragActive ? "놓으면 업로드됩니다" : "PDF · DOCX · XLSX · 이미지 · 마크다운을 드롭하거나 클릭"}
-      </div>
+      {/* Slide count + language + images toggle */}
+      <div className="grid gap-4 md:grid-cols-[1fr_auto]">
+        <div className="glass rounded-2xl px-5 py-4">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-semibold uppercase tracking-[0.2em] text-muted-foreground">
+              슬라이드 수량
+            </span>
+            <motion.span
+              key={slideCount}
+              initial={{ scale: 0.85, opacity: 0.4 }}
+              animate={{ scale: 1, opacity: 1 }}
+              className="font-display text-2xl font-semibold text-foreground"
+            >
+              {slideCount}장
+            </motion.span>
+          </div>
+          <input
+            type="range"
+            min={3}
+            max={20}
+            step={1}
+            value={slideCount}
+            onChange={(e) => setSlideCount(Number(e.target.value))}
+            className="mt-3 h-1.5 w-full cursor-pointer appearance-none rounded-full bg-border/70
+                       accent-electron
+                       [&::-webkit-slider-thumb]:h-4 [&::-webkit-slider-thumb]:w-4
+                       [&::-webkit-slider-thumb]:appearance-none
+                       [&::-webkit-slider-thumb]:rounded-full
+                       [&::-webkit-slider-thumb]:bg-electron
+                       [&::-webkit-slider-thumb]:shadow-halo"
+          />
+          <div className="mt-1 flex justify-between text-[10px] text-muted-foreground">
+            <span>3장</span>
+            <span>20장</span>
+          </div>
+        </div>
 
-      <AnimatePresence>
-        {attachments.length > 0 && (
-          <motion.ul
-            initial={{ opacity: 0, y: 8 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: 8 }}
-            className="grid gap-2 md:grid-cols-2"
-          >
-            {attachments.map((a) => (
-              <li
-                key={a.objectPath}
-                className="flex items-center gap-3 rounded-2xl border border-border/60 bg-muted/40 px-3 py-2.5"
-              >
-                <FileText className="h-4 w-4 text-muted-foreground" />
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm font-medium">{a.name}</p>
-                  <p className="text-xs text-muted-foreground">{formatBytes(a.size)}</p>
-                </div>
+        <div className="flex flex-col gap-3 md:w-56">
+          <label className="glass flex cursor-pointer items-center justify-between gap-3 rounded-2xl px-4 py-3 transition hover:border-electron/40">
+            <span className="flex items-center gap-2 text-sm">
+              <ImageIcon className="h-4 w-4 text-aurora" />
+              참고 이미지 포함
+            </span>
+            <span
+              className={cn(
+                "relative inline-flex h-5 w-9 items-center rounded-full transition",
+                includeImages ? "bg-electron" : "bg-muted",
+              )}
+            >
+              <input
+                type="checkbox"
+                className="sr-only"
+                checked={includeImages}
+                onChange={(e) => setIncludeImages(e.target.checked)}
+              />
+              <span
+                className={cn(
+                  "absolute h-4 w-4 rounded-full bg-white shadow transition",
+                  includeImages ? "left-4" : "left-0.5",
+                )}
+              />
+            </span>
+          </label>
+
+          <div className="glass flex items-center justify-between rounded-2xl px-4 py-3 text-sm">
+            <span className="text-muted-foreground">언어</span>
+            <div className="flex gap-1 rounded-full bg-muted/40 p-1">
+              {(["ko", "en"] as const).map((lang) => (
                 <button
-                  onClick={() => removeAttachment(a.objectPath)}
-                  className="rounded-full p-1 text-muted-foreground transition hover:bg-background hover:text-foreground"
-                  aria-label="제거"
+                  key={lang}
+                  onClick={() => setLanguage(lang)}
+                  className={cn(
+                    "rounded-full px-3 py-1 text-xs font-medium transition",
+                    language === lang
+                      ? "bg-electron text-white shadow"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
                 >
-                  <X className="h-4 w-4" />
+                  {lang === "ko" ? "한국어" : "English"}
                 </button>
-              </li>
-            ))}
-          </motion.ul>
-        )}
-      </AnimatePresence>
-
-      <div className="grid gap-2 md:grid-cols-[160px_1fr]">
-        <label className="text-xs font-medium uppercase tracking-[0.2em] text-muted-foreground md:self-center">
-          PDF 페이지 범위
-        </label>
-        <input
-          value={pages ?? ""}
-          onChange={(e) => setPages(e.target.value || null)}
-          placeholder="예: 10-12 (비워두면 전체)"
-          className="focus-ring rounded-xl border border-border/60 bg-muted/40 px-3.5 py-2.5 text-sm placeholder:text-muted-foreground"
-        />
+              ))}
+            </div>
+          </div>
+        </div>
       </div>
 
       <ModelSelector />
 
       <div className="mt-2 flex items-center justify-end gap-3">
         <span className="text-xs text-muted-foreground">
-          {job ? `Job ${job.job_id}` : "Ready"}
+          {status === "running" ? "생성 중..." : status === "succeeded" ? "완료" : "준비"}
         </span>
         <MotionButton
           onClick={handleGenerate}
           size="lg"
-          disabled={submitting || !!job}
-          iconLeft={<Play className="h-4 w-4" />}
+          disabled={submitting}
+          iconLeft={submitting ? <Wand2 className="h-4 w-4 animate-pulse" /> : <Play className="h-4 w-4" />}
         >
-          {submitting ? "생성 중..." : "PPT 만들기"}
+          {submitting ? "생성 중..." : `${slideCount}장 PPT 만들기`}
         </MotionButton>
       </div>
     </section>

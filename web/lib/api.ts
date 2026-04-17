@@ -1,233 +1,113 @@
 /**
- * FastAPI client.
+ * Browser-side API client.
  *
- * We use a single-origin convention: `NEXT_PUBLIC_API_ORIGIN` in .env, or the
- * Next rewrite under /proxy/* in dev. SSE is preferred for streaming since it
- * works over standard fetch and survives proxies better than WebSocket.
+ * The current deployment runs without a standalone FastAPI server. The
+ * browser talks to Supabase directly:
+ *   - POST <supabase>/functions/v1/generate    -> outline + images
+ *   - Storage for attachments (signed upload URLs, when we eventually add them)
+ *
+ * `isApiReachable()` reports "live" iff Supabase env vars are baked in at
+ * build time. The old /health probe is kept as a fallback for future FastAPI
+ * deployments.
  */
 
 import type { ModelSlot } from "./models";
 
-/**
- * Resolve the FastAPI origin.
- *
- * - In dev we can use the relative `/proxy` path because next.config.mjs
- *   rewrites it to `http://localhost:7870`.
- * - In `next export` builds (GitHub Pages), rewrites are ignored, so
- *   NEXT_PUBLIC_API_ORIGIN must be a fully qualified URL baked in at
- *   build time.
- */
-const DEFAULT_API_ORIGIN =
-  process.env.NEXT_PUBLIC_API_ORIGIN ||
-  (process.env.NODE_ENV === "production" ? "" : "/proxy");
+const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL ?? "";
+const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? "";
 
 export type ModelOverrides = Partial<Record<ModelSlot, string>>;
 
 export interface GenerateRequest {
   prompt: string;
-  attachments?: string[];
-  pages?: string | null;
+  slideCount: number;
+  includeImages: boolean;
+  language?: "ko" | "en";
   models?: ModelOverrides;
-  output_name?: string;
 }
 
-export interface GenerateJob {
-  job_id: string;
-  status: "queued" | "running" | "succeeded" | "failed";
-  workspace: string;
-  created_at: number;
+export interface SlideData {
+  index: number;
+  title: string;
+  bullets: string[];
+  notes?: string;
+  imagePrompt?: string;
+  /** Data URL ready for <img src=...> when present. */
+  imageUrl?: string;
 }
 
-export interface GenerateEvent {
-  job_id: string;
-  stage:
-    | "research"
-    | "outline"
-    | "design"
-    | "render"
-    | "export"
-    | "upload"
-    | "done"
-    | "error"
-    | "log";
-  message: string;
-  percent?: number;
-  slide_index?: number;
-  slide_preview_url?: string;
-  pptx_url?: string;
-  error?: string;
+export interface GenerateResult {
+  slide_count: number;
+  slides: SlideData[];
 }
 
-export interface ModelCatalogResponse {
-  models: Array<{
-    id: string;
-    label: string;
-    kind: "chat" | "vision" | "image";
-    family: "google";
-    default_for: string[];
-    notes?: string | null;
-  }>;
-  defaults: Record<ModelSlot, string>;
-}
-
-function url(path: string): string {
-  const origin = DEFAULT_API_ORIGIN.replace(/\/$/, "");
-  return `${origin}${path.startsWith("/") ? path : `/${path}`}`;
+/** True when browser can drive a real generation via Supabase. */
+export async function isApiReachable(): Promise<boolean> {
+  return Boolean(SUPABASE_URL && SUPABASE_ANON_KEY);
 }
 
 /**
- * Decide whether the Studio can run a real job.
- *
- * Treats the app as "live" when Supabase is configured at build time. The
- * Edge Function handles LLM calls, Storage handles attachments, Postgres
- * handles job persistence - so even without a standalone FastAPI server,
- * Supabase alone backs a working pipeline.
- *
- * We still probe /health when NEXT_PUBLIC_API_ORIGIN points at a dedicated
- * FastAPI deployment, but we no longer require it.
+ * Call the `generate` Edge Function and return parsed slides with image data
+ * URLs ready to render.
  */
-export async function isApiReachable(timeoutMs = 2500): Promise<boolean> {
-  const hasSupabase =
-    !!process.env.NEXT_PUBLIC_SUPABASE_URL && !!process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-  if (hasSupabase) return true;
-
-  if (!process.env.NEXT_PUBLIC_API_ORIGIN && typeof window !== "undefined") {
-    return false;
+export async function generateDeck(req: GenerateRequest): Promise<GenerateResult> {
+  if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+    throw new Error("Supabase is not configured");
   }
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
-  try {
-    const res = await fetch(url("/health"), { signal: ctrl.signal, cache: "no-store" });
-    return res.ok;
-  } catch {
-    return false;
-  } finally {
-    clearTimeout(timer);
-  }
-}
+  const url = `${SUPABASE_URL.replace(/\/$/, "")}/functions/v1/generate`;
 
-export async function fetchModels(): Promise<ModelCatalogResponse> {
-  const res = await fetch(url("/models"), { cache: "no-store" });
-  if (!res.ok) throw new Error(`models fetch failed: ${res.status}`);
-  return res.json();
-}
+  const chatModel =
+    (req.models?.research_agent ?? req.models?.design_agent ?? "google/gemini-2.0-flash")
+      .replace(/^google\//, "");
+  const imageModel =
+    (req.models?.t2i_model ?? "google/imagen-3.0-generate-002").replace(/^google\//, "");
 
-export async function fetchReadiness(): Promise<Record<string, unknown>> {
-  const res = await fetch(url("/readiness"), { cache: "no-store" });
-  if (!res.ok) throw new Error(`readiness fetch failed: ${res.status}`);
-  return res.json();
-}
-
-export async function createJob(req: GenerateRequest): Promise<GenerateJob> {
-  const res = await fetch(url("/generate"), {
+  const res = await fetch(url, {
     method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(req),
-  });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`createJob failed: ${res.status} ${text}`);
-  }
-  return res.json();
-}
-
-/**
- * Subscribe to SSE events for a running job.
- *
- * Returns a handle with two ways to stop: `.abort()` (AbortController-like
- * surface) and the underlying `.source` for callers that want to inspect
- * `readyState`. Calling `.abort()` is idempotent and safe to run inside a
- * React useEffect cleanup even after the stream has already ended.
- *
- * A terminal event (`done` or `error`) closes the stream on its own, but
- * clients should STILL call `.abort()` on unmount to cover the case where
- * the component is torn down mid-flight.
- */
-export interface EventStreamHandle {
-  abort: () => void;
-  readonly aborted: boolean;
-  readonly source: EventSource;
-}
-
-export function streamEvents(
-  jobId: string,
-  onEvent: (ev: GenerateEvent) => void,
-  onError?: (err: unknown) => void,
-): EventStreamHandle {
-  const source = new EventSource(url(`/generate/${jobId}/events`));
-  let aborted = false;
-
-  const close = () => {
-    if (aborted) return;
-    aborted = true;
-    source.close();
-  };
-
-  source.onmessage = (e) => {
-    if (aborted) return;
-    try {
-      const payload: GenerateEvent = JSON.parse(e.data);
-      onEvent(payload);
-      if (payload.stage === "done" || payload.stage === "error") close();
-    } catch (err) {
-      onError?.(err);
-    }
-  };
-  source.onerror = (err) => {
-    if (aborted) return;
-    onError?.(err);
-    close();
-  };
-
-  return {
-    abort: close,
-    get aborted() {
-      return aborted;
+    headers: {
+      "content-type": "application/json",
+      // Supabase verify_jwt=false on `generate`, but we still pass the anon
+      // key as apikey so the function shows up in dashboard metrics.
+      apikey: SUPABASE_ANON_KEY,
+      authorization: `Bearer ${SUPABASE_ANON_KEY}`,
     },
-    get source() {
-      return source;
-    },
-  };
-}
-
-/**
- * Upload an attachment to Supabase Storage WITHOUT round-tripping through
- * the FastAPI server.
- *
- * Flow:
- *   1. Ask FastAPI for a short-lived signed upload URL.
- *   2. PUT the raw bytes straight to Supabase Storage from the browser.
- *   3. Return the stable object_path so the caller can pass it to
- *      POST /generate as one of its `attachments`.
- *
- * Bandwidth through Fly is zero for the file body. The legacy
- * /generate/attachment endpoint is still there for older clients.
- */
-export async function uploadAttachment(file: File): Promise<{ object_path: string }> {
-  const signRes = await fetch(url("/generate/upload-sign"), {
-    method: "POST",
-    headers: { "content-type": "application/json" },
     body: JSON.stringify({
-      filename: file.name,
-      content_type: file.type || "application/octet-stream",
-      size_hint: file.size,
+      prompt: req.prompt,
+      slide_count: req.slideCount,
+      include_images: req.includeImages,
+      language: req.language ?? "ko",
+      chat_model: chatModel,
+      image_model: imageModel,
     }),
   });
-  if (!signRes.ok) {
-    const text = await signRes.text();
-    throw new Error(`sign failed: ${signRes.status} ${text}`);
+  if (!res.ok) {
+    let detail = `generate failed: ${res.status}`;
+    try {
+      const j = await res.json();
+      detail = j?.error?.message ?? detail;
+    } catch {
+      // swallow
+    }
+    throw new Error(detail);
   }
-  const { object_path, upload_url } = (await signRes.json()) as {
-    object_path: string;
-    upload_url: string;
+  const json = (await res.json()) as {
+    slide_count: number;
+    slides: Array<{
+      title: string;
+      bullets: string[];
+      notes?: string;
+      imagePrompt?: string;
+      imageB64?: string | null;
+    }>;
   };
-  const putRes = await fetch(upload_url, {
-    method: "PUT",
-    headers: { "content-type": file.type || "application/octet-stream" },
-    body: file,
-  });
-  if (!putRes.ok) {
-    throw new Error(`storage PUT failed: ${putRes.status}`);
-  }
-  return { object_path };
+
+  const slides: SlideData[] = json.slides.map((s, i) => ({
+    index: i,
+    title: s.title,
+    bullets: s.bullets ?? [],
+    notes: s.notes,
+    imagePrompt: s.imagePrompt,
+    imageUrl: s.imageB64 ? `data:image/png;base64,${s.imageB64}` : undefined,
+  }));
+  return { slide_count: json.slide_count, slides };
 }

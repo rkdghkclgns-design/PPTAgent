@@ -1,99 +1,79 @@
-/**
- * Global Zustand store for the Studio page.
- *
- * Kept deliberately small - most state lives inside components and URL. The
- * store owns (1) the current prompt/attachments/models draft, (2) the live
- * event stream buffer, (3) the currently-selected slide in the preview.
- */
-
 "use client";
 
 import { create } from "zustand";
 
 import { DEFAULT_MODELS, type ModelSlot } from "./models";
-import type { GenerateEvent, GenerateJob, ModelOverrides } from "./api";
+import type { ModelOverrides, SlideData } from "./api";
 
-export interface SlidePreview {
-  index: number;
-  imageUrl?: string;
-  title?: string;
-}
+export type JobStatus = "idle" | "running" | "succeeded" | "failed";
 
 interface StudioState {
   prompt: string;
-  attachments: { name: string; objectPath: string; size: number }[];
-  pages: string | null;
+  slideCount: number;
+  includeImages: boolean;
+  language: "ko" | "en";
   overrides: ModelOverrides;
 
-  job: GenerateJob | null;
-  events: GenerateEvent[];
-  slides: SlidePreview[];
+  status: JobStatus;
+  slides: SlideData[];
   activeSlide: number;
   progress: number;
+  error: string | null;
   pptxUrl: string | null;
 
   setPrompt: (value: string) => void;
-  setPages: (value: string | null) => void;
+  setSlideCount: (value: number) => void;
+  setIncludeImages: (value: boolean) => void;
+  setLanguage: (value: "ko" | "en") => void;
   setModel: (slot: ModelSlot, id: string) => void;
-  addAttachment: (att: { name: string; objectPath: string; size: number }) => void;
-  removeAttachment: (objectPath: string) => void;
-  setJob: (job: GenerateJob | null) => void;
-  appendEvent: (ev: GenerateEvent) => void;
+
+  beginJob: () => void;
+  updateProgress: (percent: number) => void;
+  setSlides: (slides: SlideData[]) => void;
   setActiveSlide: (index: number) => void;
+  succeed: (pptxUrl?: string | null) => void;
+  fail: (error: string) => void;
   reset: () => void;
 }
 
-const initialState = {
+const initial = {
   prompt: "",
-  attachments: [],
-  pages: null,
+  slideCount: 8,
+  includeImages: true,
+  language: "ko" as const,
   overrides: { ...DEFAULT_MODELS } as ModelOverrides,
-  job: null,
-  events: [],
-  slides: [],
+  status: "idle" as JobStatus,
+  slides: [] as SlideData[],
   activeSlide: 0,
   progress: 0,
-  pptxUrl: null,
+  error: null as string | null,
+  pptxUrl: null as string | null,
 };
 
 export const useStudioStore = create<StudioState>((set) => ({
-  ...initialState,
+  ...initial,
   setPrompt: (value) => set({ prompt: value }),
-  setPages: (value) => set({ pages: value }),
+  setSlideCount: (value) =>
+    set({ slideCount: Math.max(1, Math.min(25, Math.round(value))) }),
+  setIncludeImages: (value) => set({ includeImages: value }),
+  setLanguage: (value) => set({ language: value }),
   setModel: (slot, id) =>
     set((s) => ({ overrides: { ...s.overrides, [slot]: id } })),
-  addAttachment: (att) =>
-    set((s) => ({ attachments: [...s.attachments, att] })),
-  removeAttachment: (objectPath) =>
-    set((s) => ({
-      attachments: s.attachments.filter((a) => a.objectPath !== objectPath),
-    })),
-  setJob: (job) => set({ job, events: [], slides: [], progress: 0, pptxUrl: null }),
-  appendEvent: (ev) =>
-    set((s) => {
-      const progress =
-        typeof ev.percent === "number" ? Math.max(s.progress, ev.percent) : s.progress;
-      const [slides, activeSlide] =
-        ev.stage === "design" && typeof ev.slide_index === "number"
-          ? (() => {
-              const idx = ev.slide_index;
-              const next = s.slides.slice();
-              next[idx] = {
-                index: idx,
-                imageUrl: ev.slide_preview_url ?? next[idx]?.imageUrl,
-                title: ev.message,
-              };
-              return [next, idx] as const;
-            })()
-          : ([s.slides, s.activeSlide] as const);
-      return {
-        events: [...s.events, ev],
-        slides,
-        activeSlide,
-        progress,
-        pptxUrl: ev.pptx_url ?? s.pptxUrl,
-      };
+
+  beginJob: () =>
+    set({
+      status: "running",
+      slides: [],
+      activeSlide: 0,
+      progress: 0,
+      error: null,
+      pptxUrl: null,
     }),
+  updateProgress: (percent) =>
+    set((s) => ({ progress: Math.max(s.progress, Math.min(1, percent)) })),
+  setSlides: (slides) => set({ slides, activeSlide: 0 }),
   setActiveSlide: (index) => set({ activeSlide: index }),
-  reset: () => set({ ...initialState }),
+  succeed: (pptxUrl) => set({ status: "succeeded", progress: 1, pptxUrl: pptxUrl ?? null }),
+  fail: (error) => set({ status: "failed", error }),
+  reset: () => set({ ...initial }),
 }));

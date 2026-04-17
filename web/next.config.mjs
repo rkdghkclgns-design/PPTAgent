@@ -1,16 +1,12 @@
 /**
- * Next.js config — tuned for dual-target builds:
+ * Next.js config - two targets share the same source tree:
  *
- *   1. Local dev / Vercel       → standard SSR build (`next dev`, `next build`)
- *   2. GitHub Pages             → static export with a /PPTAgent basePath
+ *   1. Local dev / Vercel   -> standard SSR (`next dev`, `next build`)
+ *   2. GitHub Pages         -> `next export` at /PPTAgent basePath
  *
- * Switch is driven by `DEPLOY_TARGET=pages` (set by the Pages workflow).
- *
- * Caveats for the Pages target:
- *   - `rewrites()` is silently ignored by `next export`, so the client must
- *     hit the FastAPI origin directly. Set NEXT_PUBLIC_API_ORIGIN to the full
- *     URL of the deployed API (e.g. https://pptagent-api.fly.dev).
- *   - Image optimisation is disabled because GitHub Pages has no optimizer.
+ * The browser talks to Supabase directly, so there is no /proxy rewrite -
+ * it would be silently dropped by `next export` anyway. Attachments aren't
+ * supported in this branch (the generate flow doesn't need them yet).
  */
 
 const isPages = process.env.DEPLOY_TARGET === "pages";
@@ -22,7 +18,6 @@ const nextConfig = {
   experimental: {
     typedRoutes: true,
   },
-  // Static export for GitHub Pages
   ...(isPages
     ? {
         output: "export",
@@ -39,14 +34,6 @@ const nextConfig = {
           { protocol: "https", hostname: "images.unsplash.com" },
         ],
       },
-  ...(isPages
-    ? {}
-    : {
-        async rewrites() {
-          const apiOrigin = process.env.NEXT_PUBLIC_API_ORIGIN ?? "http://localhost:7870";
-          return [{ source: "/proxy/:path*", destination: `${apiOrigin}/:path*` }];
-        },
-      }),
 };
 
 export default nextConfig;
