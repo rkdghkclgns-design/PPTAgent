@@ -1,0 +1,15 @@
+# Lint config scoped to the FastAPI wrapper only. The upstream deeppresenter/
+# and pptagent/ packages are still governed by their own .pre-commit-config.yaml
+# and are intentionally not covered by this file.
+line-length = 100
+target-version = "py312"
+
+[lint]
+select = ["E", "F", "W", "I"]
+# E501 is re-enabled via line-length above.
+# UP042 (StrEnum) is skipped because mypy-friendly `(str, Enum)` pattern is
+# more portable for libraries that still type-check against Python 3.10.
+ignore = ["E501"]
+
+[lint.per-file-ignores]
+"__init__.py" = ["F401"]

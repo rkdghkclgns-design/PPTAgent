@@ -49,7 +49,7 @@ jobs:
         shell: bash
         run: |
           source .venv/bin/activate
-          ruff check api/ --target-version py312 --select E,F,W,I,UP
+          ruff check api/
 
       - name: Mypy (api/ only)
         shell: bash

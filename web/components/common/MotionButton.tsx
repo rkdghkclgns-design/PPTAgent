@@ -7,11 +7,12 @@ import { cn } from "@/lib/utils";
 
 type Variant = "primary" | "secondary" | "ghost";
 
-type MotionButtonProps = HTMLMotionProps<"button"> & {
+type MotionButtonProps = Omit<HTMLMotionProps<"button">, "children"> & {
   variant?: Variant;
   size?: "sm" | "md" | "lg";
   iconLeft?: React.ReactNode;
   iconRight?: React.ReactNode;
+  children?: React.ReactNode;
 };
 
 const variantClass: Record<Variant, string> = {
