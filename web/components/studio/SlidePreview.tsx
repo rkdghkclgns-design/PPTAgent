@@ -1,20 +1,26 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { AnimatePresence, motion } from "framer-motion";
 import {
+  ArrowDown,
+  ArrowUp,
   Download,
   Expand,
   ImageOff,
+  ImagePlus,
   ImageUp,
   Link2,
   Loader2,
   Maximize2,
   MessageCircle,
+  Plus,
   Radio,
   RefreshCcw,
   Sparkles,
   Target,
+  Trash2,
   Upload,
   X,
 } from "lucide-react";
@@ -53,8 +59,25 @@ export function SlidePreview() {
 
   const [zoomOpen, setZoomOpen] = useState(false);
   const [downloading, setDownloading] = useState(false);
+  const [fullscreenOpen, setFullscreenOpen] = useState(false);
 
   const current: SlideData | null = slides[active] ?? slides[0] ?? null;
+
+  async function toggleFullscreen() {
+    const nextOpen = !fullscreenOpen;
+    setFullscreenOpen(nextOpen);
+    // Best-effort: ask the browser for true fullscreen so the chrome bar
+    // disappears. Falls back to a CSS overlay when the API is blocked.
+    try {
+      if (nextOpen) {
+        if (!document.fullscreenElement) await document.documentElement.requestFullscreen?.();
+      } else {
+        if (document.fullscreenElement) await document.exitFullscreen?.();
+      }
+    } catch {
+      /* fullscreen API rejected — the CSS overlay still renders */
+    }
+  }
 
   async function handleDownload() {
     if (slides.length === 0) return;
@@ -73,10 +96,16 @@ export function SlidePreview() {
   return (
     <aside className="flex h-full min-h-0 w-[520px] shrink-0 flex-col border-l border-border/60 bg-card/40 backdrop-blur-xl">
       <header className="flex shrink-0 items-center justify-between border-b border-border/60 px-5 py-3">
-        <div className="flex items-center gap-2">
-          <Maximize2 className="h-4 w-4 text-electron" />
+        <button
+          type="button"
+          onClick={toggleFullscreen}
+          disabled={slides.length === 0}
+          className="focus-ring group flex items-center gap-2 rounded-xl px-2 py-1 transition hover:bg-muted/50 disabled:opacity-40 disabled:hover:bg-transparent"
+          title={slides.length === 0 ? "슬라이드 생성 후 사용" : "브라우저 전체 확대"}
+        >
+          <Maximize2 className="h-4 w-4 text-electron transition group-hover:scale-110" />
           <p className="text-sm font-semibold">실시간 프리뷰</p>
-        </div>
+        </button>
         <MotionButton
           size="sm"
           variant={slides.length > 0 ? "primary" : "secondary"}
@@ -179,6 +208,23 @@ export function SlidePreview() {
             slide={current}
             slideIndex={active}
             onClose={() => setZoomOpen(false)}
+          />
+        )}
+      </AnimatePresence>
+      <AnimatePresence>
+        {fullscreenOpen && slides.length > 0 && (
+          <FullscreenDeck
+            slides={slides}
+            active={active}
+            onSelect={setActive}
+            onClose={async () => {
+              setFullscreenOpen(false);
+              try {
+                if (document.fullscreenElement) await document.exitFullscreen?.();
+              } catch {
+                /* ignore */
+              }
+            }}
           />
         )}
       </AnimatePresence>
@@ -595,6 +641,129 @@ function ThumbnailStrip({
   );
 }
 
+function FullscreenDeck({
+  slides,
+  active,
+  onSelect,
+  onClose,
+}: {
+  slides: SlideData[];
+  active: number;
+  onSelect: (i: number) => void;
+  onClose: () => void;
+}) {
+  // Lock body scroll + handle keyboard nav while fullscreen is open.
+  useEffect(() => {
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+      else if (e.key === "ArrowRight" || e.key === " ") {
+        e.preventDefault();
+        onSelect(Math.min(slides.length - 1, active + 1));
+      } else if (e.key === "ArrowLeft") {
+        e.preventDefault();
+        onSelect(Math.max(0, active - 1));
+      }
+    };
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.body.style.overflow = prev;
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [slides.length, active, onSelect, onClose]);
+
+  // Exit fullscreen if the browser kicks us out (e.g. F11, tab switch).
+  useEffect(() => {
+    const onFsChange = () => {
+      if (!document.fullscreenElement) onClose();
+    };
+    document.addEventListener("fullscreenchange", onFsChange);
+    return () => document.removeEventListener("fullscreenchange", onFsChange);
+  }, [onClose]);
+
+  const slide = slides[active];
+  if (typeof window === "undefined") return null;
+  return createPortal(
+    <motion.div
+      className="fixed inset-0 z-[100] flex flex-col bg-ink-950"
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+    >
+      <header className="flex shrink-0 items-center justify-between border-b border-border/40 bg-ink-950/90 px-5 py-3 text-xs text-muted-foreground">
+        <div className="flex items-center gap-3">
+          <span className="rounded-full border border-border/60 bg-muted/40 px-2.5 py-0.5 font-mono">
+            {active + 1} / {slides.length}
+          </span>
+          <span className="max-w-[50vw] truncate font-medium text-foreground">{slide.title}</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => onSelect(Math.max(0, active - 1))}
+            disabled={active === 0}
+            className="focus-ring rounded-lg border border-border/60 bg-muted/40 px-3 py-1 transition hover:border-electron/40 disabled:opacity-40"
+          >
+            ← 이전
+          </button>
+          <button
+            type="button"
+            onClick={() => onSelect(Math.min(slides.length - 1, active + 1))}
+            disabled={active >= slides.length - 1}
+            className="focus-ring rounded-lg border border-border/60 bg-muted/40 px-3 py-1 transition hover:border-electron/40 disabled:opacity-40"
+          >
+            다음 →
+          </button>
+          <button
+            type="button"
+            onClick={onClose}
+            className="focus-ring flex h-8 w-8 items-center justify-center rounded-full border border-border/60 bg-muted/40 text-muted-foreground transition hover:border-electron/50 hover:text-foreground"
+            aria-label="닫기"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+      </header>
+      <div className="relative flex min-h-0 flex-1 items-center justify-center p-8">
+        <div className="relative w-full max-w-[min(95vw,calc((100vh-8rem)*16/9))]">
+          <div className="overflow-hidden rounded-3xl border border-border/40 shadow-halo">
+            <SlideCanvas slide={slide} scale="zoom" />
+          </div>
+        </div>
+      </div>
+      <footer className="shrink-0 overflow-x-auto border-t border-border/40 bg-ink-950/80 px-5 py-3">
+        <div className="flex gap-2">
+          {slides.map((s, i) => (
+            <button
+              key={i}
+              type="button"
+              onClick={() => onSelect(i)}
+              className={cn(
+                "relative aspect-video w-28 shrink-0 overflow-hidden rounded-lg border border-border/50 bg-ink-900 transition",
+                active === i && "border-electron ring-2 ring-electron/40",
+              )}
+              title={s.title}
+            >
+              {s.imageUrl ? (
+                <img src={s.imageUrl} alt="" className="absolute inset-0 h-full w-full object-cover" />
+              ) : (
+                <div className="absolute inset-0 flex items-center justify-center p-1.5 text-center text-[9px] font-medium leading-tight text-foreground/70">
+                  {s.title.slice(0, 24)}
+                </div>
+              )}
+              <span className="absolute bottom-0.5 right-1 rounded bg-ink-950/80 px-1 text-[9px] font-mono text-muted-foreground">
+                {i + 1}
+              </span>
+            </button>
+          ))}
+        </div>
+      </footer>
+    </motion.div>,
+    document.body,
+  );
+}
+
 function ZoomModal({
   slide,
   slideIndex,
@@ -612,17 +781,22 @@ function ZoomModal({
   const [bullets, setBullets] = useState<string[]>(slide.bullets ?? []);
   const [notes, setNotes] = useState(slide.notes ?? "");
   const [imagePrompt, setImagePrompt] = useState(slide.imagePrompt ?? "");
-  const [imageUrl, setImageUrl] = useState<string | undefined>(slide.imageUrl);
+  // Canonical editable image list. Seeded from `images` when available,
+  // falls back to the legacy `imageUrl` for older slides.
+  const initialImages = slide.images && slide.images.length > 0
+    ? slide.images
+    : slide.imageUrl ? [slide.imageUrl] : [];
+  const [images, setImages] = useState<string[]>(initialImages);
   const [regenerating, setRegenerating] = useState(false);
   const [saving, setSaving] = useState(false);
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const addFileInputRef = useRef<HTMLInputElement | null>(null);
 
   const dirty =
     title !== slide.title ||
     JSON.stringify(bullets) !== JSON.stringify(slide.bullets ?? []) ||
     notes !== (slide.notes ?? "") ||
     imagePrompt !== (slide.imagePrompt ?? "") ||
-    imageUrl !== slide.imageUrl;
+    JSON.stringify(images) !== JSON.stringify(initialImages);
 
   // Lock body scroll while the modal is open so background doesn't jiggle.
   useEffect(() => {
@@ -652,7 +826,23 @@ function ZoomModal({
     setBullets((prev) => [...prev, ""]);
   }
 
-  async function handleRegenerate() {
+  // --- Image gallery ops ---------------------------------------------------
+
+  function moveImage(i: number, delta: -1 | 1) {
+    setImages((prev) => {
+      const j = i + delta;
+      if (j < 0 || j >= prev.length) return prev;
+      const next = prev.slice();
+      [next[i], next[j]] = [next[j], next[i]];
+      return next;
+    });
+  }
+  function removeImage(i: number) {
+    setImages((prev) => prev.filter((_, idx) => idx !== i));
+  }
+
+  /** Regenerate and append (mode=add) OR replace the primary (mode=replace). */
+  async function handleRegenerate(mode: "add" | "replace") {
     if (regenerating) return;
     setRegenerating(true);
     try {
@@ -663,21 +853,22 @@ function ZoomModal({
         imageStyle: slide.imageStyle,
         kind: slide.kind,
       });
-      setImageUrl(url);
-      toast.success("이미지를 새로 생성했습니다");
+      setImages((prev) => (mode === "replace" && prev.length > 0 ? [url, ...prev.slice(1)] : [...prev, url]));
+      toast.success(mode === "replace" ? "대표 이미지를 교체했습니다" : "이미지를 추가했습니다");
     } catch (err) {
       console.error(err);
-      toast.error(err instanceof Error ? err.message : "이미지 재생성 실패");
+      toast.error(err instanceof Error ? err.message : "이미지 생성 실패");
     } finally {
       setRegenerating(false);
     }
   }
 
-  async function handleUpload(file: File) {
+  async function handleAddUpload(files: FileList | null) {
+    if (!files || files.length === 0) return;
     try {
-      const url = await imageFileToDataUrl(file);
-      setImageUrl(url);
-      toast.success("이미지를 교체했습니다");
+      const urls = await Promise.all(Array.from(files).map((f) => imageFileToDataUrl(f)));
+      setImages((prev) => [...prev, ...urls]);
+      toast.success(`${urls.length}장 추가됨`);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "이미지 업로드 실패");
     }
@@ -691,7 +882,8 @@ function ZoomModal({
       bullets: cleanedBullets,
       notes: notes.trim() ? notes.trim() : undefined,
       imagePrompt: imagePrompt.trim() ? imagePrompt.trim() : undefined,
-      imageUrl,
+      images,
+      imageUrl: images[0],
     });
     setSaving(false);
     toast.success("슬라이드를 수정했습니다");
@@ -705,10 +897,12 @@ function ZoomModal({
     bullets: bullets.length > 0 ? bullets : slide.bullets,
     notes,
     imagePrompt,
-    imageUrl,
+    images,
+    imageUrl: images[0],
   };
 
-  return (
+  if (typeof window === "undefined") return null;
+  return createPortal(
     <motion.div
       className="fixed inset-0 z-[90] flex items-center justify-center bg-ink-950/85 p-6 backdrop-blur-xl"
       initial={{ opacity: 0 }}
@@ -823,7 +1017,7 @@ function ZoomModal({
 
             <section className="mt-5 space-y-2.5">
               <label className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.22em] text-muted-foreground">
-                <ImageUp className="h-3 w-3" /> 이미지 · 프롬프트 또는 직접 업로드
+                <ImageUp className="h-3 w-3" /> 이미지 갤러리 · 추가 / 순서 변경
               </label>
               <textarea
                 value={imagePrompt}
@@ -832,51 +1026,101 @@ function ZoomModal({
                 placeholder="재생성 프롬프트 (예: 한국 고등학교 교실, 학생들이 기후 데이터 차트를 분석하는 장면, 늦은 오후 황금빛 조명)"
                 className="focus-ring w-full resize-none rounded-xl border border-border/70 bg-muted/40 px-3 py-2 text-xs leading-relaxed"
               />
-              <div className="flex gap-2">
+              <div className="grid grid-cols-2 gap-2">
                 <button
                   type="button"
-                  onClick={handleRegenerate}
-                  disabled={regenerating}
-                  className="focus-ring flex flex-1 items-center justify-center gap-1.5 rounded-xl border border-electron/50 bg-electron/10 px-3 py-2 text-xs font-semibold text-electron transition hover:bg-electron/20 disabled:opacity-50"
+                  onClick={() => handleRegenerate("replace")}
+                  disabled={regenerating || images.length === 0}
+                  className="focus-ring flex items-center justify-center gap-1.5 rounded-xl border border-electron/50 bg-electron/10 px-2.5 py-2 text-[11px] font-semibold text-electron transition hover:bg-electron/20 disabled:opacity-40"
                 >
-                  {regenerating ? (
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  ) : (
-                    <RefreshCcw className="h-3.5 w-3.5" />
-                  )}
-                  {regenerating ? "생성 중..." : "나노바나나로 재생성"}
+                  {regenerating ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCcw className="h-3.5 w-3.5" />}
+                  대표 교체
                 </button>
                 <button
                   type="button"
-                  onClick={() => fileInputRef.current?.click()}
-                  className="focus-ring flex flex-1 items-center justify-center gap-1.5 rounded-xl border border-border/70 bg-muted/40 px-3 py-2 text-xs font-semibold text-foreground transition hover:border-electron/40"
+                  onClick={() => handleRegenerate("add")}
+                  disabled={regenerating}
+                  className="focus-ring flex items-center justify-center gap-1.5 rounded-xl border border-aurora/50 bg-aurora/10 px-2.5 py-2 text-[11px] font-semibold text-aurora transition hover:bg-aurora/20 disabled:opacity-40"
+                >
+                  {regenerating ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ImagePlus className="h-3.5 w-3.5" />}
+                  AI 로 추가
+                </button>
+                <button
+                  type="button"
+                  onClick={() => addFileInputRef.current?.click()}
+                  className="focus-ring col-span-2 flex items-center justify-center gap-1.5 rounded-xl border border-border/70 bg-muted/40 px-3 py-2 text-[11px] font-semibold text-foreground transition hover:border-electron/40"
                 >
                   <Upload className="h-3.5 w-3.5" />
-                  이미지 업로드
+                  파일 업로드 (여러 장 가능)
                 </button>
               </div>
               <input
-                ref={fileInputRef}
+                ref={addFileInputRef}
                 type="file"
                 accept="image/*"
+                multiple
                 className="hidden"
                 onChange={(e) => {
-                  const f = e.target.files?.[0];
-                  if (f) handleUpload(f);
+                  handleAddUpload(e.target.files);
                   e.currentTarget.value = "";
                 }}
               />
-              {imageUrl && (
-                <div className="relative overflow-hidden rounded-xl border border-border/60">
-                  <img src={imageUrl} alt="" className="aspect-video w-full object-cover" />
-                  <button
-                    type="button"
-                    onClick={() => setImageUrl(undefined)}
-                    className="absolute right-2 top-2 rounded-full bg-ink-950/80 px-2 py-0.5 text-[10px] text-muted-foreground transition hover:text-destructive"
-                  >
-                    이미지 제거
-                  </button>
+
+              {images.length === 0 ? (
+                <div className="flex flex-col items-center gap-1 rounded-xl border border-dashed border-border/60 bg-muted/20 px-4 py-6 text-center text-[11px] text-muted-foreground">
+                  <ImageOff className="h-4 w-4" />
+                  이미지가 없습니다. 위 버튼으로 추가하세요.
                 </div>
+              ) : (
+                <ul className="space-y-2">
+                  {images.map((src, i) => (
+                    <li
+                      key={`${i}-${src.slice(0, 24)}`}
+                      className={cn(
+                        "group flex items-center gap-2 rounded-xl border bg-ink-950/60 p-1.5 transition",
+                        i === 0 ? "border-electron/50" : "border-border/60",
+                      )}
+                    >
+                      <img src={src} alt="" className="h-16 w-28 shrink-0 rounded-lg object-cover" />
+                      <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+                        <span className={cn("text-[10px] font-semibold uppercase tracking-[0.2em]", i === 0 ? "text-electron" : "text-muted-foreground")}>
+                          {i === 0 ? "대표 이미지" : `추가 #${i}`}
+                        </span>
+                        <span className="text-[10px] text-muted-foreground">
+                          {i === 0 ? "슬라이드·PPTX 에 사용됩니다" : "맨 위로 올리면 대표가 됩니다"}
+                        </span>
+                      </div>
+                      <div className="flex shrink-0 items-center gap-0.5">
+                        <button
+                          type="button"
+                          onClick={() => moveImage(i, -1)}
+                          disabled={i === 0}
+                          className="rounded-md p-1 text-muted-foreground transition hover:bg-muted/60 hover:text-foreground disabled:opacity-30"
+                          title="위로"
+                        >
+                          <ArrowUp className="h-3.5 w-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => moveImage(i, 1)}
+                          disabled={i >= images.length - 1}
+                          className="rounded-md p-1 text-muted-foreground transition hover:bg-muted/60 hover:text-foreground disabled:opacity-30"
+                          title="아래로"
+                        >
+                          <ArrowDown className="h-3.5 w-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => removeImage(i)}
+                          className="rounded-md p-1 text-muted-foreground transition hover:bg-muted/60 hover:text-destructive"
+                          title="삭제"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
               )}
             </section>
 
@@ -914,6 +1158,7 @@ function ZoomModal({
           <span>ESC 로 닫기</span>
         </footer>
       </motion.div>
-    </motion.div>
+    </motion.div>,
+    document.body,
   );
 }

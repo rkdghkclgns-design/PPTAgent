@@ -55,8 +55,16 @@ export interface SlideData {
   bullets: string[];
   notes?: string;
   imagePrompt?: string;
-  /** Data URL ready for <img src=...> when present. */
+  /**
+   * Primary image data URL, kept for back-compat with the PPTX exporter and
+   * the slide canvas. Always equals `images[0]` when `images` is populated.
+   */
   imageUrl?: string;
+  /**
+   * Full ordered list of images attached to this slide. First entry is the
+   * primary (cover) image. Edit modal can add / remove / reorder entries.
+   */
+  images?: string[];
   /** Art-direction hint from the outline model. */
   imageStyle?: ImageStyle;
   /** Composition variant used by both the web preview and the PPTX renderer. */
@@ -173,6 +181,7 @@ export async function generateDeck(req: GenerateRequest): Promise<GenerateResult
       notes: s.notes,
       imagePrompt: s.imagePrompt,
       imageUrl: url,
+      images: url ? [url] : [],
       imageStyle: s.imageStyle,
       layoutVariant: s.layoutVariant,
       diagram: s.diagram,
