@@ -34,6 +34,33 @@ export function defaultLayoutForKind(kind: SlideKind): ImageLayout {
   }
 }
 
+/**
+ * Sensible initial layout for the i-th image. Index 0 gets the kind's
+ * primary slot; additional images stack diagonally at smaller size so
+ * they don't overlap and the user can drag them into place.
+ */
+export function defaultLayoutForIndex(kind: SlideKind, index: number): ImageLayout {
+  const base = defaultLayoutForKind(kind);
+  if (index === 0) return base;
+  // Smaller "sticker" tiles in the opposite corner, offset per index.
+  const tileW = 0.22;
+  const tileH = 0.28;
+  const startX = 0.05;
+  const startY = 0.6;
+  const offsetX = (index - 1) * (tileW + 0.02);
+  return clampLayout({
+    x: startX + offsetX,
+    y: startY,
+    w: tileW,
+    h: tileH,
+  });
+}
+
+/** True when the slide has at least one image with a custom placement. */
+export function hasAnyLayoutOverride(layouts?: Array<ImageLayout | null>): boolean {
+  return Boolean(layouts?.some((l) => l != null));
+}
+
 /** Clamp a layout so it never leaves the slide. */
 export function clampLayout(l: ImageLayout): ImageLayout {
   const w = Math.max(0.05, Math.min(1, l.w));

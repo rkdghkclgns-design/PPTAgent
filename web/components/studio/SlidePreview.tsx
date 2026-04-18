@@ -33,7 +33,8 @@ import { downloadPptx } from "@/lib/pptx";
 import { renderMermaid, svgToDataUrl } from "@/lib/mermaid";
 import {
   clampLayout,
-  defaultLayoutForKind,
+  defaultLayoutForIndex,
+  hasAnyLayoutOverride,
   IMAGE_LAYOUT_PRESETS,
 } from "@/lib/imageLayouts";
 import { cn } from "@/lib/utils";
@@ -43,6 +44,7 @@ import {
   type ImageLayout,
   type SlideData,
   type SlideKind,
+  type SlideTextStyle,
 } from "@/lib/api";
 
 const KIND_STYLE: Record<SlideKind, { label: string; icon: React.ComponentType<any>; tint: string }> = {
@@ -356,18 +358,38 @@ function MainSlide({
 // Kind-aware slide canvas
 // ---------------------------------------------------------------------------
 
+const FONT_FAMILY_CLASS: Record<NonNullable<SlideTextStyle["fontFamily"]>, string> = {
+  sans: "[&_h3]:!font-sans [&_ul]:!font-sans [&_p]:!font-sans",
+  serif: "[&_h3]:!font-serif [&_ul]:!font-serif [&_p]:!font-serif",
+  display: "[&_h3]:!font-display",
+};
+
 function SlideCanvas({
   slide,
   scale,
-  hidePrimaryImage,
+  hideAllImages,
 }: {
   slide: SlideData;
   scale: "preview" | "zoom";
-  /** When true, the kind's default primary-image slot renders empty so a
-   *  DraggableImage overlay from the parent can take its place cleanly. */
-  hidePrimaryImage?: boolean;
+  /** When true, the kind's default image slots render empty so an overlay
+   *  (DraggableImages from the parent) can take their place cleanly. */
+  hideAllImages?: boolean;
 }) {
   const padding = scale === "zoom" ? "p-12" : "p-6";
+  const ts = slide.textStyle ?? {};
+  const titleScale = ts.titleScale ?? 1;
+  const bulletScale = ts.bulletScale ?? 1;
+  const titleSizePx =
+    slide.kind === "cover"
+      ? (scale === "zoom" ? 60 : 30) * titleScale
+      : (scale === "zoom" ? 36 : 20) * titleScale;
+  const bulletSizePx = (scale === "zoom" ? 18 : 11) * bulletScale;
+  const titleStyle = { fontSize: `${titleSizePx}px` } as const;
+  const bulletStyle = { fontSize: `${bulletSizePx}px` } as const;
+  const titleWeightClass = ts.titleWeight === "bold" ? "font-bold" : ts.titleWeight === "semibold" ? "font-semibold" : "";
+  const fontFamilyClass = ts.fontFamily ? FONT_FAMILY_CLASS[ts.fontFamily] : "";
+  // Keep the legacy "titleSize" class just for backwards compatibility (used
+  // in a couple of spots not yet refactored).
   const titleSize =
     slide.kind === "cover"
       ? scale === "zoom" ? "text-6xl" : "text-3xl"
@@ -375,12 +397,17 @@ function SlideCanvas({
   const bulletSize = scale === "zoom" ? "text-lg" : "text-[11px]";
   const accentHeight = scale === "zoom" ? "h-1.5" : "h-1";
   const accentWidth = scale === "zoom" ? "w-16" : "w-10";
+  // When imageLayouts has any non-null entry, the whole slide switches to
+  // free-form image rendering. Kind-default image slots are suppressed so
+  // the overlay images don't double up.
+  const freeform = hasAnyLayoutOverride(slide.imageLayouts);
+  const suppressKindImages = hideAllImages || freeform;
 
   // Cover layout: giant title centred, gradient image as background.
   if (slide.kind === "cover") {
     return (
-      <div className={cn("relative aspect-video w-full overflow-hidden bg-ink-900", padding)}>
-        {slide.imageUrl && !hidePrimaryImage && (
+      <div className={cn("relative aspect-video w-full overflow-hidden bg-ink-900", padding, fontFamilyClass)}>
+        {slide.imageUrl && !suppressKindImages && (
           <img
             src={slide.imageUrl}
             alt=""
@@ -390,15 +417,16 @@ function SlideCanvas({
         <div className="absolute inset-0 bg-gradient-to-br from-ink-950/80 via-ink-900/40 to-ink-950/90" />
         <div className="relative flex h-full flex-col justify-end">
           <p className="text-xs uppercase tracking-[0.3em] text-electron/80">Cover</p>
-          <h3 className={cn("mt-2 font-display font-bold tracking-tight text-foreground", titleSize)}>
+          <h3 style={titleStyle} className={cn("mt-2 font-display tracking-tight text-foreground", titleWeightClass || "font-bold")}>
             {slide.title}
           </h3>
           {slide.bullets?.length > 0 && (
-            <p className={cn("mt-4 text-foreground/80", scale === "zoom" ? "text-xl" : "text-sm")}>
+            <p style={bulletStyle} className="mt-4 text-foreground/80">
               {slide.bullets[0]}
             </p>
           )}
         </div>
+        {freeform && !hideAllImages && <FreeformImages slide={slide} />}
       </div>
     );
   }
@@ -411,22 +439,22 @@ function SlideCanvas({
     if (slide.imageUrl) return [slide.imageUrl];
     return [];
   })();
-  const primaryImage = hidePrimaryImage ? undefined : gallery[0];
-  const extraImages = gallery.slice(1);
+  const primaryImage = suppressKindImages ? undefined : gallery[0];
+  const extraImages = suppressKindImages ? [] : gallery.slice(1);
 
   // Objectives: 2-column layout — numbered checklist on the left, hero
   // image on the right. Extra images stack as thumbnails underneath so the
   // user's entire gallery is visible on the slide.
   if (slide.kind === "objectives") {
     return (
-      <div className={cn("relative grid aspect-video w-full grid-cols-[1.2fr_1fr] gap-6 bg-ink-900", padding)}>
+      <div className={cn("relative grid aspect-video w-full grid-cols-[1.2fr_1fr] gap-6 bg-ink-900", padding, fontFamilyClass)}>
         <div className="flex min-w-0 flex-col">
           <p className="text-[10px] uppercase tracking-[0.3em] text-aurora">학습 목표</p>
-          <h3 className={cn("mt-1 font-display font-semibold tracking-tight text-foreground", titleSize)}>
+          <h3 style={titleStyle} className={cn("mt-1 font-display tracking-tight text-foreground", titleWeightClass || "font-semibold")}>
             {slide.title}
           </h3>
           <div className={cn("mt-3 rounded-full bg-aurora", accentHeight, accentWidth)} />
-          <ul className={cn("mt-5 space-y-3", bulletSize)}>
+          <ul style={bulletStyle} className="mt-5 space-y-3">
             {slide.bullets.map((b, i) => (
               <li key={i} className="flex items-start gap-3 text-foreground/90">
                 <span className="mt-[0.15em] flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-aurora/60 text-[10px] font-bold text-aurora">
@@ -453,10 +481,13 @@ function SlideCanvas({
             )}
           </div>
         ) : (
-          <div className="flex items-center justify-center rounded-xl border border-dashed border-border/40 text-center text-[10px] text-muted-foreground">
-            갤러리에 이미지를 추가하면 여기에 표시됩니다.
-          </div>
+          !suppressKindImages && (
+            <div className="flex items-center justify-center rounded-xl border border-dashed border-border/40 text-center text-[10px] text-muted-foreground">
+              갤러리에 이미지를 추가하면 여기에 표시됩니다.
+            </div>
+          )
         )}
+        {freeform && !hideAllImages && <FreeformImages slide={slide} />}
       </div>
     );
   }
@@ -464,7 +495,7 @@ function SlideCanvas({
   // Summary: sunrise-tinted highlight cards with optional hero background.
   if (slide.kind === "summary") {
     return (
-      <div className={cn("relative aspect-video w-full overflow-hidden bg-ink-900")}>
+      <div className={cn("relative aspect-video w-full overflow-hidden bg-ink-900", fontFamilyClass)}>
         {primaryImage && (
           <>
             <img src={primaryImage} alt="" className="absolute inset-0 h-full w-full object-cover opacity-30" />
@@ -473,7 +504,7 @@ function SlideCanvas({
         )}
         <div className={cn("relative h-full", padding)}>
           <p className="text-[10px] uppercase tracking-[0.3em] text-sunrise">Summary</p>
-          <h3 className={cn("mt-1 font-display font-semibold tracking-tight text-foreground", titleSize)}>
+          <h3 style={titleStyle} className={cn("mt-1 font-display tracking-tight text-foreground", titleWeightClass || "font-semibold")}>
             {slide.title}
           </h3>
           <div className={cn("mt-3 rounded-full bg-sunrise", accentHeight, accentWidth)} />
@@ -483,7 +514,7 @@ function SlideCanvas({
                 key={i}
                 className="rounded-xl border border-sunrise/30 bg-sunrise/5 p-3 text-foreground/90 backdrop-blur-sm"
               >
-                <p className={cn("font-medium", bulletSize)}>{b}</p>
+                <p style={bulletStyle} className="font-medium">{b}</p>
               </div>
             ))}
           </div>
@@ -497,6 +528,7 @@ function SlideCanvas({
             </div>
           )}
         </div>
+        {freeform && !hideAllImages && <FreeformImages slide={slide} />}
       </div>
     );
   }
@@ -504,7 +536,7 @@ function SlideCanvas({
   // Q&A: minimal centered layout with optional background image.
   if (slide.kind === "qna") {
     return (
-      <div className={cn("relative flex aspect-video w-full flex-col items-center justify-center gap-4 overflow-hidden bg-ink-900 text-center", padding)}>
+      <div className={cn("relative flex aspect-video w-full flex-col items-center justify-center gap-4 overflow-hidden bg-ink-900 text-center", padding, fontFamilyClass)}>
         {primaryImage && (
           <>
             <img src={primaryImage} alt="" className="absolute inset-0 h-full w-full object-cover opacity-25" />
@@ -513,34 +545,36 @@ function SlideCanvas({
         )}
         <div className="relative flex flex-col items-center gap-4">
           <MessageCircle className={cn("text-electron", scale === "zoom" ? "h-14 w-14" : "h-7 w-7")} />
-          <h3 className={cn("font-display font-bold tracking-tight text-foreground", titleSize)}>
+          <h3 style={titleStyle} className={cn("font-display tracking-tight text-foreground", titleWeightClass || "font-bold")}>
             {slide.title}
           </h3>
           {slide.bullets?.[0] && (
-            <p className="max-w-[80%] text-muted-foreground">{slide.bullets[0]}</p>
+            <p style={bulletStyle} className="max-w-[80%] text-muted-foreground">{slide.bullets[0]}</p>
           )}
         </div>
+        {freeform && !hideAllImages && <FreeformImages slide={slide} />}
       </div>
     );
   }
 
   const variant = slide.layoutVariant ?? "split-right";
-  const effectiveImageUrl = hidePrimaryImage ? undefined : slide.imageUrl;
+  const effectiveImageUrl = suppressKindImages ? undefined : slide.imageUrl;
   const hasVisual = Boolean(slide.diagram || effectiveImageUrl);
 
   // Quote: centered punchline, no image.
   if (variant === "quote") {
     return (
-      <div className={cn("relative flex aspect-video w-full flex-col items-center justify-center bg-ink-900 text-center", padding)}>
+      <div className={cn("relative flex aspect-video w-full flex-col items-center justify-center bg-ink-900 text-center", padding, fontFamilyClass)}>
         <span className={cn("font-display leading-none text-electron/80", scale === "zoom" ? "text-[180px]" : "text-[80px]")}>“</span>
-        <h3 className={cn("mt-2 max-w-[80%] font-display font-bold tracking-tight text-foreground", titleSize)}>
+        <h3 style={titleStyle} className={cn("mt-2 max-w-[80%] font-display tracking-tight text-foreground", titleWeightClass || "font-bold")}>
           {slide.title}
         </h3>
         {slide.bullets?.[0] && (
-          <p className={cn("mt-4 max-w-[70%] text-foreground/70", scale === "zoom" ? "text-xl" : "text-sm")}>
+          <p style={bulletStyle} className="mt-4 max-w-[70%] text-foreground/70">
             {slide.bullets[0]}
           </p>
         )}
+        {freeform && !hideAllImages && <FreeformImages slide={slide} />}
       </div>
     );
   }
@@ -548,17 +582,17 @@ function SlideCanvas({
   // Hero: full-bleed image with overlay text.
   if (variant === "hero" && hasVisual) {
     return (
-      <div className={cn("relative aspect-video w-full overflow-hidden bg-ink-900")}>
+      <div className={cn("relative aspect-video w-full overflow-hidden bg-ink-900", fontFamilyClass)}>
         {effectiveImageUrl && (
           <img src={effectiveImageUrl} alt={slide.imagePrompt ?? slide.title} className="absolute inset-0 h-full w-full object-cover" />
         )}
         <div className="absolute inset-0 bg-gradient-to-b from-ink-950/20 via-ink-950/60 to-ink-950/95" />
         <div className={cn("relative flex h-full flex-col justify-end", padding)}>
-          <h3 className={cn("font-display font-bold tracking-tight text-foreground", titleSize)}>
+          <h3 style={titleStyle} className={cn("font-display tracking-tight text-foreground", titleWeightClass || "font-bold")}>
             {slide.title}
           </h3>
           <div className={cn("mt-2 rounded-full bg-electron", accentHeight, accentWidth)} />
-          <ul className={cn("mt-3 max-w-[70%] space-y-1 text-foreground/85", bulletSize)}>
+          <ul style={bulletStyle} className="mt-3 max-w-[70%] space-y-1 text-foreground/85">
             {slide.bullets?.slice(0, 3).map((b, i) => (
               <li key={i} className="flex gap-2">
                 <span className="mt-[0.35em] h-1 w-1 shrink-0 rounded-full bg-aurora" />
@@ -567,6 +601,7 @@ function SlideCanvas({
             ))}
           </ul>
         </div>
+        {freeform && !hideAllImages && <FreeformImages slide={slide} />}
       </div>
     );
   }
@@ -574,12 +609,12 @@ function SlideCanvas({
   // Stacked: text on top, wide image below.
   if (variant === "stacked") {
     return (
-      <div className={cn("relative flex aspect-video w-full flex-col bg-ink-900", padding)}>
-        <h3 className={cn("font-display font-semibold tracking-tight text-foreground", titleSize)}>
+      <div className={cn("relative flex aspect-video w-full flex-col bg-ink-900", padding, fontFamilyClass)}>
+        <h3 style={titleStyle} className={cn("font-display tracking-tight text-foreground", titleWeightClass || "font-semibold")}>
           {slide.title}
         </h3>
         <div className={cn("mt-2 rounded-full bg-electron", accentHeight, accentWidth)} />
-        <ul className={cn("mt-3 space-y-1 text-foreground/85", bulletSize)}>
+        <ul style={bulletStyle} className="mt-3 space-y-1 text-foreground/85">
           {slide.bullets?.slice(0, 4).map((b, i) => (
             <li key={i} className="flex gap-2">
               <span className="mt-[0.35em] h-1 w-1 shrink-0 rounded-full bg-aurora" />
@@ -596,6 +631,7 @@ function SlideCanvas({
             ) : null}
           </div>
         )}
+        {freeform && !hideAllImages && <FreeformImages slide={slide} />}
       </div>
     );
   }
@@ -603,14 +639,14 @@ function SlideCanvas({
   // Split-left / split-right (default): image on one side, text on the other.
   const imageOnLeft = variant === "split-left";
   return (
-    <div className={cn("relative aspect-video w-full bg-ink-900", padding)}>
+    <div className={cn("relative aspect-video w-full bg-ink-900", padding, fontFamilyClass)}>
       <div className={cn("relative flex h-full gap-5", imageOnLeft && "flex-row-reverse")}>
         <div className="flex min-w-0 flex-1 flex-col">
-          <h3 className={cn("font-display font-semibold tracking-tight text-foreground", titleSize)}>
+          <h3 style={titleStyle} className={cn("font-display tracking-tight text-foreground", titleWeightClass || "font-semibold")}>
             {slide.title}
           </h3>
           <div className={cn("mt-3 rounded-full bg-electron", accentHeight, accentWidth)} />
-          <ul className={cn("mt-4 space-y-1.5 text-foreground/85", bulletSize)}>
+          <ul style={bulletStyle} className="mt-4 space-y-1.5 text-foreground/85">
             {slide.bullets?.map((b, i) => (
               <li key={i} className="flex gap-2">
                 <span className="mt-[0.35em] h-1 w-1 shrink-0 rounded-full bg-aurora" />
@@ -644,7 +680,147 @@ function SlideCanvas({
           </div>
         )}
       </div>
+      {freeform && !hideAllImages && <FreeformImages slide={slide} />}
     </div>
+  );
+}
+
+/**
+ * Inline text-style editor: two scale sliders and a font-family picker.
+ * Updates propagate immediately so the live preview reflects changes.
+ */
+function TextStyleEditor({
+  value,
+  onChange,
+}: {
+  value: SlideTextStyle;
+  onChange: (next: SlideTextStyle) => void;
+}) {
+  const titleScale = value.titleScale ?? 1;
+  const bulletScale = value.bulletScale ?? 1;
+  const fontFamily = value.fontFamily ?? "display";
+  const titleWeight = value.titleWeight ?? "bold";
+
+  function patch(p: Partial<SlideTextStyle>) {
+    onChange({ ...value, ...p });
+  }
+
+  return (
+    <div className="space-y-3 rounded-xl border border-border/60 bg-muted/30 p-3">
+      <div className="space-y-1.5">
+        <div className="flex items-center justify-between text-[11px]">
+          <span className="text-muted-foreground">제목 크기</span>
+          <span className="font-mono text-electron">{titleScale.toFixed(2)}×</span>
+        </div>
+        <input
+          type="range"
+          min={0.7}
+          max={1.6}
+          step={0.05}
+          value={titleScale}
+          onChange={(e) => patch({ titleScale: Number(e.target.value) })}
+          className="w-full accent-electron"
+        />
+      </div>
+      <div className="space-y-1.5">
+        <div className="flex items-center justify-between text-[11px]">
+          <span className="text-muted-foreground">본문 크기</span>
+          <span className="font-mono text-aurora">{bulletScale.toFixed(2)}×</span>
+        </div>
+        <input
+          type="range"
+          min={0.7}
+          max={1.6}
+          step={0.05}
+          value={bulletScale}
+          onChange={(e) => patch({ bulletScale: Number(e.target.value) })}
+          className="w-full accent-aurora"
+        />
+      </div>
+      <div className="space-y-1.5">
+        <span className="text-[11px] text-muted-foreground">서체</span>
+        <div className="grid grid-cols-3 gap-1.5">
+          {(["display", "sans", "serif"] as const).map((f) => (
+            <button
+              key={f}
+              type="button"
+              onClick={() => patch({ fontFamily: f })}
+              className={cn(
+                "rounded-lg border px-2 py-1.5 text-[11px] font-medium transition",
+                fontFamily === f
+                  ? "border-electron bg-electron/10 text-electron"
+                  : "border-border/60 bg-muted/30 text-foreground/80 hover:border-electron/40",
+                f === "display" && "font-display",
+                f === "sans" && "font-sans",
+                f === "serif" && "font-serif",
+              )}
+            >
+              {f === "display" ? "디스플레이" : f === "sans" ? "고딕" : "명조"}
+            </button>
+          ))}
+        </div>
+      </div>
+      <div className="space-y-1.5">
+        <span className="text-[11px] text-muted-foreground">제목 굵기</span>
+        <div className="grid grid-cols-2 gap-1.5">
+          {(["semibold", "bold"] as const).map((w) => (
+            <button
+              key={w}
+              type="button"
+              onClick={() => patch({ titleWeight: w })}
+              className={cn(
+                "rounded-lg border px-2 py-1.5 text-[11px] transition",
+                titleWeight === w
+                  ? "border-electron bg-electron/10 text-electron"
+                  : "border-border/60 bg-muted/30 text-foreground/80 hover:border-electron/40",
+                w === "semibold" ? "font-semibold" : "font-bold",
+              )}
+            >
+              {w === "semibold" ? "보통" : "굵게"}
+            </button>
+          ))}
+        </div>
+      </div>
+      <button
+        type="button"
+        onClick={() => onChange({})}
+        className="w-full rounded-lg border border-border/60 bg-muted/20 px-2 py-1.5 text-[11px] font-medium text-muted-foreground transition hover:border-electron/40 hover:text-foreground"
+      >
+        기본값으로 초기화
+      </button>
+    </div>
+  );
+}
+
+/**
+ * Renders each image with a non-null imageLayouts entry (or the kind's
+ * default slot for null entries) as an absolute-positioned static <img>.
+ * Used by SlideCanvas when the slide has switched to free-form mode.
+ */
+function FreeformImages({ slide }: { slide: SlideData }) {
+  const gallery: string[] = slide.images && slide.images.length > 0
+    ? slide.images
+    : slide.imageUrl ? [slide.imageUrl] : [];
+  return (
+    <>
+      {gallery.map((src, i) => {
+        const layout = slide.imageLayouts?.[i] ?? defaultLayoutForIndex(slide.kind, i);
+        return (
+          <div
+            key={`ff-${i}-${src.slice(0, 32)}`}
+            className="pointer-events-none absolute overflow-hidden rounded-lg shadow-lg"
+            style={{
+              left: `${layout.x * 100}%`,
+              top: `${layout.y * 100}%`,
+              width: `${layout.w * 100}%`,
+              height: `${layout.h * 100}%`,
+            }}
+          >
+            <img src={src} alt="" className="absolute inset-0 h-full w-full object-cover" />
+          </div>
+        );
+      })}
+    </>
   );
 }
 
@@ -870,10 +1046,16 @@ function ZoomModal({
     ? slide.images
     : slide.imageUrl ? [slide.imageUrl] : [];
   const [images, setImages] = useState<string[]>(initialImages);
-  // Per-image layout override (x/y/w/h as 0-1 fractions). null = use kind default.
-  const initialLayout = slide.imageLayouts?.[0] ?? null;
-  const [primaryLayout, setPrimaryLayout] = useState<ImageLayout | null>(initialLayout);
-  const [layoutSelected, setLayoutSelected] = useState(false);
+  // Per-image layout override (null = kind default). Sized to match images[].
+  const initialLayouts: Array<ImageLayout | null> = initialImages.map(
+    (_, i) => slide.imageLayouts?.[i] ?? null,
+  );
+  const [imageLayouts, setImageLayoutsState] = useState<Array<ImageLayout | null>>(initialLayouts);
+  // Which image is currently selected for drag/preset edits.
+  const [selectedIdx, setSelectedIdx] = useState<number | null>(null);
+  // Text styling overrides (size multipliers + font family).
+  const initialTextStyle: SlideTextStyle = slide.textStyle ?? {};
+  const [textStyle, setTextStyle] = useState<SlideTextStyle>(initialTextStyle);
   const canvasRef = useRef<HTMLDivElement | null>(null);
   const [regenerating, setRegenerating] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -885,7 +1067,8 @@ function ZoomModal({
     notes !== (slide.notes ?? "") ||
     imagePrompt !== (slide.imagePrompt ?? "") ||
     JSON.stringify(images) !== JSON.stringify(initialImages) ||
-    JSON.stringify(primaryLayout) !== JSON.stringify(initialLayout);
+    JSON.stringify(imageLayouts) !== JSON.stringify(initialLayouts) ||
+    JSON.stringify(textStyle) !== JSON.stringify(initialTextStyle);
 
   // Lock body scroll while the modal is open so background doesn't jiggle.
   useEffect(() => {
@@ -917,9 +1100,16 @@ function ZoomModal({
 
   // --- Image gallery ops ---------------------------------------------------
 
+  /** Swap image + layout at the same time so positions track the image. */
   function moveImage(i: number, delta: -1 | 1) {
+    const j = i + delta;
     setImages((prev) => {
-      const j = i + delta;
+      if (j < 0 || j >= prev.length) return prev;
+      const next = prev.slice();
+      [next[i], next[j]] = [next[j], next[i]];
+      return next;
+    });
+    setImageLayoutsState((prev) => {
       if (j < 0 || j >= prev.length) return prev;
       const next = prev.slice();
       [next[i], next[j]] = [next[j], next[i]];
@@ -928,6 +1118,16 @@ function ZoomModal({
   }
   function removeImage(i: number) {
     setImages((prev) => prev.filter((_, idx) => idx !== i));
+    setImageLayoutsState((prev) => prev.filter((_, idx) => idx !== i));
+    setSelectedIdx((cur) => (cur === i ? null : cur));
+  }
+  function updateLayoutAt(i: number, next: ImageLayout | null) {
+    setImageLayoutsState((prev) => {
+      const arr = prev.slice();
+      while (arr.length <= i) arr.push(null);
+      arr[i] = next;
+      return arr;
+    });
   }
 
   /** Regenerate and append (mode=add) OR replace the primary (mode=replace). */
@@ -943,6 +1143,10 @@ function ZoomModal({
         kind: slide.kind,
       });
       setImages((prev) => (mode === "replace" && prev.length > 0 ? [url, ...prev.slice(1)] : [...prev, url]));
+      setImageLayoutsState((prev) => {
+        if (mode === "replace" && prev.length > 0) return prev; // keep existing layout for primary
+        return [...prev, null];
+      });
       toast.success(mode === "replace" ? "대표 이미지를 교체했습니다" : "이미지를 추가했습니다");
     } catch (err) {
       console.error(err);
@@ -957,6 +1161,7 @@ function ZoomModal({
     try {
       const urls = await Promise.all(Array.from(files).map((f) => imageFileToDataUrl(f)));
       setImages((prev) => [...prev, ...urls]);
+      setImageLayoutsState((prev) => [...prev, ...urls.map(() => null as ImageLayout | null)]);
       toast.success(`${urls.length}장 추가됨`);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "이미지 업로드 실패");
@@ -966,10 +1171,12 @@ function ZoomModal({
   function handleApply() {
     setSaving(true);
     const cleanedBullets = bullets.map((b) => b.trim()).filter((b) => b.length > 0);
-    // Keep the imageLayouts array sized with images so indices line up.
-    const nextLayouts: Array<ImageLayout | null> = images.map((_, i) =>
-      i === 0 ? primaryLayout : (slide.imageLayouts?.[i] ?? null),
+    // Align layouts length with images.
+    const nextLayouts: Array<ImageLayout | null> = images.map(
+      (_, i) => imageLayouts[i] ?? null,
     );
+    // Strip empty textStyle → undefined so it doesn't bloat storage.
+    const ts = Object.values(textStyle).some((v) => v != null) ? textStyle : undefined;
     updateSlide(slideIndex, {
       title: title.trim() || slide.title,
       bullets: cleanedBullets,
@@ -978,6 +1185,7 @@ function ZoomModal({
       images,
       imageUrl: images[0],
       imageLayouts: nextLayouts,
+      textStyle: ts,
     });
     setSaving(false);
     toast.success("슬라이드를 수정했습니다");
@@ -993,13 +1201,18 @@ function ZoomModal({
     imagePrompt,
     images,
     imageUrl: images[0],
+    imageLayouts,
+    textStyle,
   };
 
-  // Effective layout for the draggable overlay: explicit override OR the
-  // kind's default slot.
-  const effectiveLayout: ImageLayout = primaryLayout ?? defaultLayoutForKind(slide.kind);
+  // In the zoom modal every image is rendered as a draggable overlay. We
+  // resolve each image's effective layout from imageLayouts[i] or fall
+  // back to the kind-specific default for that index so newly added
+  // images appear at sensible, non-overlapping positions.
+  const resolvedLayouts: ImageLayout[] = images.map(
+    (_, i) => imageLayouts[i] ?? defaultLayoutForIndex(slide.kind, i),
+  );
   const hasPrimaryImage = images.length > 0;
-  const showOverlay = hasPrimaryImage;
 
   if (typeof window === "undefined") return null;
   return createPortal(
@@ -1052,24 +1265,24 @@ function ZoomModal({
             ref={canvasRef}
             className="relative overflow-hidden bg-ink-900"
             onPointerDown={(e) => {
-              // Deselect the draggable overlay when the user clicks the
-              // empty canvas area (target is this div itself).
-              if (e.target === e.currentTarget) setLayoutSelected(false);
+              // Deselect any selected image when the user clicks empty canvas.
+              if (e.target === e.currentTarget) setSelectedIdx(null);
             }}
           >
-            <SlideCanvas slide={previewSlide} scale="zoom" hidePrimaryImage={showOverlay} />
-            {showOverlay && (
+            <SlideCanvas slide={previewSlide} scale="zoom" hideAllImages={hasPrimaryImage} />
+            {hasPrimaryImage && images.map((src, i) => (
               <DraggableImage
-                src={images[0]}
-                layout={effectiveLayout}
+                key={`${i}-${src.slice(0, 32)}`}
+                src={src}
+                layout={resolvedLayouts[i]}
                 containerRef={canvasRef}
                 interactive
-                selected={layoutSelected}
-                onSelect={() => setLayoutSelected(true)}
-                onChange={(next) => setPrimaryLayout(next)}
+                selected={selectedIdx === i}
+                onSelect={() => setSelectedIdx(i)}
+                onChange={(next) => updateLayoutAt(i, next)}
                 alt={slide.imagePrompt ?? slide.title}
               />
-            )}
+            ))}
           </div>
 
           <div className="flex min-h-0 flex-col overflow-y-auto scrollbar-slim border-l border-border/60 bg-ink-950/60 p-5">
@@ -1139,34 +1352,36 @@ function ZoomModal({
               <section className="mt-5 space-y-2.5">
                 <div className="flex items-center justify-between">
                   <label className="text-[10px] font-semibold uppercase tracking-[0.22em] text-muted-foreground">
-                    대표 이미지 배치
+                    이미지 배치
                   </label>
                   <button
                     type="button"
                     onClick={() => {
-                      setPrimaryLayout(null);
-                      setLayoutSelected(false);
+                      if (selectedIdx == null) return;
+                      updateLayoutAt(selectedIdx, null);
                     }}
-                    disabled={primaryLayout === null}
+                    disabled={selectedIdx == null || imageLayouts[selectedIdx] == null}
                     className="text-[11px] font-medium text-electron hover:text-electron/80 disabled:opacity-40"
                   >
                     기본 배치로 되돌리기
                   </button>
                 </div>
                 <p className="text-[10px] leading-relaxed text-muted-foreground">
-                  왼쪽 프리뷰에서 이미지를 클릭한 뒤 자유롭게 드래그 · 모서리로 크기 조절하거나,
-                  아래 프리셋을 사용하세요.
+                  {selectedIdx == null
+                    ? "왼쪽 프리뷰에서 수정할 이미지를 클릭하세요. 여러 이미지를 독립적으로 배치할 수 있습니다."
+                    : `이미지 #${selectedIdx + 1} 선택됨 — 드래그 · 모서리 리사이즈 또는 아래 프리셋을 사용하세요.`}
                 </p>
                 <div className="grid grid-cols-3 gap-1.5">
                   {IMAGE_LAYOUT_PRESETS.map((preset) => (
                     <button
                       key={preset.id}
                       type="button"
+                      disabled={selectedIdx == null}
                       onClick={() => {
-                        setPrimaryLayout(clampLayout(preset.layout));
-                        setLayoutSelected(true);
+                        if (selectedIdx == null) return;
+                        updateLayoutAt(selectedIdx, clampLayout(preset.layout));
                       }}
-                      className="rounded-lg border border-border/60 bg-muted/30 px-2 py-1.5 text-[11px] font-medium text-foreground/80 transition hover:border-electron/40 hover:text-foreground"
+                      className="rounded-lg border border-border/60 bg-muted/30 px-2 py-1.5 text-[11px] font-medium text-foreground/80 transition hover:border-electron/40 hover:text-foreground disabled:opacity-40"
                     >
                       {preset.label}
                     </button>
@@ -1174,6 +1389,13 @@ function ZoomModal({
                 </div>
               </section>
             )}
+
+            <section className="mt-5 space-y-3">
+              <label className="text-[10px] font-semibold uppercase tracking-[0.22em] text-muted-foreground">
+                텍스트 스타일
+              </label>
+              <TextStyleEditor value={textStyle} onChange={setTextStyle} />
+            </section>
 
             <section className="mt-5 space-y-2.5">
               <label className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.22em] text-muted-foreground">

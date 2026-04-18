@@ -5,8 +5,28 @@
 
 "use client";
 
-import type { SlideData, SourceRef } from "./api";
+import type { SlideData, SlideTextStyle, SourceRef } from "./api";
+import {
+  defaultLayoutForIndex,
+  hasAnyLayoutOverride,
+} from "./imageLayouts";
 import { renderMermaid, svgToPngDataUrl } from "./mermaid";
+
+/** Font-face mapping shared by every PPTX text block. */
+function fontFaceFor(ts: SlideTextStyle | undefined): string {
+  switch (ts?.fontFamily) {
+    case "sans": return "Inter";
+    case "serif": return "Noto Serif KR";
+    case "display":
+    default: return "Inter";
+  }
+}
+function titleScaleFor(ts: SlideTextStyle | undefined): number {
+  return ts?.titleScale ?? 1;
+}
+function bulletScaleFor(ts: SlideTextStyle | undefined): number {
+  return ts?.bulletScale ?? 1;
+}
 
 const INK_950 = "05050E";
 const INK_900 = "0A0B14";
@@ -59,11 +79,13 @@ export async function downloadPptx(slides: SlideData[], prompt: string): Promise
     s.background = { color: INK_950 };
     const diagramPng = diagrams.get(slide.index);
 
-    // If the user set a custom primary-image layout, render the slide with
-    // the default image slot suppressed and overlay the image at the
-    // user-specified rectangle.
-    const override = slide.imageLayouts?.[0];
-    const slideForKind: SlideData = override ? { ...slide, imageUrl: undefined, images: slide.images?.slice(1) } : slide;
+    // Free-form mode: if the user set ANY imageLayouts entry, strip all
+    // kind-default image rendering and overlay every image at its
+    // user-specified (or auto-offset) rectangle.
+    const freeform = hasAnyLayoutOverride(slide.imageLayouts);
+    const slideForKind: SlideData = freeform
+      ? { ...slide, imageUrl: undefined, images: [] }
+      : slide;
     switch (slide.kind) {
       case "cover":
         renderCover(s, slideForKind);
@@ -80,20 +102,26 @@ export async function downloadPptx(slides: SlideData[], prompt: string): Promise
       default:
         renderContent(s, slideForKind, diagramPng);
     }
-    if (override && slide.imageUrl) {
-      s.addImage({
-        data: slide.imageUrl,
-        x: override.x * 13.333,
-        y: override.y * 7.5,
-        w: override.w * 13.333,
-        h: override.h * 7.5,
-        sizing: { type: "cover", w: override.w * 13.333, h: override.h * 7.5 },
+    if (freeform) {
+      const gallery: string[] = slide.images && slide.images.length > 0
+        ? slide.images
+        : slide.imageUrl ? [slide.imageUrl] : [];
+      gallery.forEach((src, i) => {
+        const layout = slide.imageLayouts?.[i] ?? defaultLayoutForIndex(slide.kind, i);
+        s.addImage({
+          data: src,
+          x: layout.x * 13.333,
+          y: layout.y * 7.5,
+          w: layout.w * 13.333,
+          h: layout.h * 7.5,
+          sizing: { type: "cover", w: layout.w * 13.333, h: layout.h * 7.5 },
+        });
       });
     }
 
     if (slide.notes) s.addNotes(slide.notes);
-    addSourcesFooter(s, slide.sources);
-    addPageNumber(s, slide.index);
+    addSourcesFooter(s, slide);
+    addPageNumber(s, slide);
   }
 
   const filename = sanitizeFilename(prompt);
@@ -106,6 +134,10 @@ export async function downloadPptx(slides: SlideData[], prompt: string): Promise
 // ---------------------------------------------------------------------------
 
 function renderCover(s: any, slide: SlideData) {
+  const ff = fontFaceFor(slide.textStyle);
+  const ts = titleScaleFor(slide.textStyle);
+  const bs = bulletScaleFor(slide.textStyle);
+  const bold = (slide.textStyle?.titleWeight ?? "bold") === "bold";
   if (slide.imageUrl) {
     s.addImage({
       data: slide.imageUrl,
@@ -130,7 +162,7 @@ function renderCover(s: any, slide: SlideData) {
     y: 3.0,
     w: 12,
     h: 0.5,
-    fontFace: "Inter",
+    fontFace: ff,
     fontSize: 14,
     color: ELECTRON,
     charSpacing: 5,
@@ -140,9 +172,9 @@ function renderCover(s: any, slide: SlideData) {
     y: 3.5,
     w: 12,
     h: 2.4,
-    fontFace: "Inter",
-    fontSize: 58,
-    bold: true,
+    fontFace: ff,
+    fontSize: Math.round(58 * ts),
+    bold,
     color: INK_100,
     valign: "top",
   });
@@ -152,24 +184,28 @@ function renderCover(s: any, slide: SlideData) {
       y: 5.9,
       w: 12,
       h: 0.8,
-      fontFace: "Inter",
-      fontSize: 22,
+      fontFace: ff,
+      fontSize: Math.round(22 * bs),
       color: MUTED,
     });
   }
 }
 
 function renderObjectives(s: any, slide: SlideData) {
+  const ff = fontFaceFor(slide.textStyle);
+  const ts = titleScaleFor(slide.textStyle);
+  const bs = bulletScaleFor(slide.textStyle);
+  const bold = (slide.textStyle?.titleWeight ?? "bold") === "bold";
   const gallery = galleryOf(slide);
   const hasImage = gallery.length > 0;
   const textW = hasImage ? 6.8 : 12.3;
   s.addText("학습 목표 · OBJECTIVES", {
     x: 0.5, y: 0.45, w: textW, h: 0.5,
-    fontFace: "Inter", fontSize: 14, color: AURORA, charSpacing: 4,
+    fontFace: ff, fontSize: 14, color: AURORA, charSpacing: 4,
   });
   s.addText(slide.title, {
     x: 0.5, y: 0.95, w: textW, h: 1.1,
-    fontFace: "Inter", fontSize: 30, bold: true, color: INK_100, valign: "middle",
+    fontFace: ff, fontSize: Math.round(30 * ts), bold, color: INK_100, valign: "middle",
   });
   s.addShape("rect", {
     x: 0.5, y: 2.05, w: 1.2, h: 0.1,
@@ -185,11 +221,11 @@ function renderObjectives(s: any, slide: SlideData) {
     });
     s.addText(String(i + 1), {
       x: 0.5, y, w: 0.5, h: 0.5,
-      fontFace: "Inter", fontSize: 16, bold: true, color: AURORA, align: "center", valign: "middle",
+      fontFace: fontFaceFor(slide.textStyle), fontSize: 16, bold: true, color: AURORA, align: "center", valign: "middle",
     });
     s.addText(bullet, {
       x: 1.2, y: y - 0.05, w: textW - 0.8, h: 0.6,
-      fontFace: "Inter", fontSize: 16, color: INK_100, valign: "middle",
+      fontFace: fontFaceFor(slide.textStyle), fontSize: 16, color: INK_100, valign: "middle",
     });
   });
 
@@ -255,7 +291,7 @@ function renderSplitContent(s: any, slide: SlideData, imageLeft: boolean, visual
 
   s.addText(slide.title, {
     x: textX, y: 0.45, w: textW, h: 1.1,
-    fontFace: "Inter", fontSize: 30, bold: true, color: INK_100, valign: "middle",
+    fontFace: fontFaceFor(slide.textStyle), fontSize: 30, bold: true, color: INK_100, valign: "middle",
   });
   s.addShape("rect", {
     x: textX, y: 1.55, w: 0.9, h: 0.08,
@@ -264,7 +300,7 @@ function renderSplitContent(s: any, slide: SlideData, imageLeft: boolean, visual
   if (slide.bullets?.length) {
     s.addText(
       slide.bullets.map((b) => ({ text: b, options: { breakLine: true, bullet: { code: "2022" } } })),
-      { x: textX, y: 1.9, w: textW, h: 4.5, fontFace: "Inter", fontSize: 16, color: INK_100, valign: "top", paraSpaceAfter: 8 },
+      { x: textX, y: 1.9, w: textW, h: 4.5, fontFace: fontFaceFor(slide.textStyle), fontSize: 16, color: INK_100, valign: "top", paraSpaceAfter: 8 },
     );
   }
   if (hasVisual && visualSrc) {
@@ -288,7 +324,7 @@ function renderSplitContent(s: any, slide: SlideData, imageLeft: boolean, visual
     } else if (caption) {
       s.addText(caption, {
         x: imageX, y: 6.35, w: 5.4, h: 0.4,
-        fontFace: "Inter", fontSize: 9, color: MUTED, italic: true, valign: "top",
+        fontFace: fontFaceFor(slide.textStyle), fontSize: 9, color: MUTED, italic: true, valign: "top",
       });
     }
   }
@@ -304,18 +340,18 @@ function renderHeroContent(s: any, slide: SlideData, visualSrc: string, caption?
   });
   s.addText(slide.title, {
     x: 0.6, y: 3.9, w: 12, h: 1.2,
-    fontFace: "Inter", fontSize: 36, bold: true, color: INK_100, valign: "middle",
+    fontFace: fontFaceFor(slide.textStyle), fontSize: 36, bold: true, color: INK_100, valign: "middle",
   });
   if (slide.bullets?.length) {
     s.addText(
       slide.bullets.slice(0, 3).map((b) => ({ text: b, options: { breakLine: true, bullet: { code: "2022" } } })),
-      { x: 0.6, y: 5.2, w: 12, h: 1.6, fontFace: "Inter", fontSize: 15, color: INK_100, valign: "top", paraSpaceAfter: 6 },
+      { x: 0.6, y: 5.2, w: 12, h: 1.6, fontFace: fontFaceFor(slide.textStyle), fontSize: 15, color: INK_100, valign: "top", paraSpaceAfter: 6 },
     );
   }
   if (caption) {
     s.addText(caption, {
       x: 0.6, y: 6.9, w: 12, h: 0.3,
-      fontFace: "Inter", fontSize: 8, color: MUTED, italic: true, valign: "top",
+      fontFace: fontFaceFor(slide.textStyle), fontSize: 8, color: MUTED, italic: true, valign: "top",
     });
   }
 }
@@ -323,7 +359,7 @@ function renderHeroContent(s: any, slide: SlideData, visualSrc: string, caption?
 function renderStackedContent(s: any, slide: SlideData, visualSrc: string | undefined, caption: string | undefined, extras: string[] = []) {
   s.addText(slide.title, {
     x: 0.5, y: 0.45, w: 12.3, h: 1.0,
-    fontFace: "Inter", fontSize: 28, bold: true, color: INK_100, valign: "middle",
+    fontFace: fontFaceFor(slide.textStyle), fontSize: 28, bold: true, color: INK_100, valign: "middle",
   });
   s.addShape("rect", {
     x: 0.5, y: 1.5, w: 0.9, h: 0.08,
@@ -332,7 +368,7 @@ function renderStackedContent(s: any, slide: SlideData, visualSrc: string | unde
   if (slide.bullets?.length) {
     s.addText(
       slide.bullets.slice(0, 4).map((b) => ({ text: b, options: { breakLine: true, bullet: { code: "2022" } } })),
-      { x: 0.5, y: 1.75, w: 12.3, h: 2.2, fontFace: "Inter", fontSize: 15, color: INK_100, valign: "top", paraSpaceAfter: 6 },
+      { x: 0.5, y: 1.75, w: 12.3, h: 2.2, fontFace: fontFaceFor(slide.textStyle), fontSize: 15, color: INK_100, valign: "top", paraSpaceAfter: 6 },
     );
   }
   if (visualSrc) {
@@ -355,7 +391,7 @@ function renderStackedContent(s: any, slide: SlideData, visualSrc: string | unde
     if (caption && extras.length === 0) {
       s.addText(caption, {
         x: 0.5, y: 6.75, w: 12.3, h: 0.3,
-        fontFace: "Inter", fontSize: 9, color: MUTED, italic: true, valign: "top",
+        fontFace: fontFaceFor(slide.textStyle), fontSize: 9, color: MUTED, italic: true, valign: "top",
       });
     }
   }
@@ -368,16 +404,16 @@ function renderQuoteContent(s: any, slide: SlideData) {
   });
   s.addText("\u201C", {
     x: 0.5, y: 1.2, w: 2.0, h: 2.0,
-    fontFace: "Inter", fontSize: 220, bold: true, color: ELECTRON, valign: "top",
+    fontFace: fontFaceFor(slide.textStyle), fontSize: 220, bold: true, color: ELECTRON, valign: "top",
   });
   s.addText(slide.title, {
     x: 1.5, y: 2.7, w: 10.3, h: 2.2,
-    fontFace: "Inter", fontSize: 40, bold: true, color: INK_100, align: "center", valign: "middle",
+    fontFace: fontFaceFor(slide.textStyle), fontSize: 40, bold: true, color: INK_100, align: "center", valign: "middle",
   });
   if (slide.bullets?.[0]) {
     s.addText(slide.bullets[0], {
       x: 2.0, y: 5.1, w: 9.3, h: 1.2,
-      fontFace: "Inter", fontSize: 18, color: MUTED, align: "center", valign: "top",
+      fontFace: fontFaceFor(slide.textStyle), fontSize: 18, color: MUTED, align: "center", valign: "top",
     });
   }
 }
@@ -400,11 +436,11 @@ function renderSummary(s: any, slide: SlideData) {
   }
   s.addText("SUMMARY", {
     x: 0.5, y: 0.45, w: 12.3, h: 0.5,
-    fontFace: "Inter", fontSize: 14, color: SUNRISE, charSpacing: 4,
+    fontFace: fontFaceFor(slide.textStyle), fontSize: 14, color: SUNRISE, charSpacing: 4,
   });
   s.addText(slide.title, {
     x: 0.5, y: 0.95, w: 12.3, h: 1.1,
-    fontFace: "Inter", fontSize: 34, bold: true, color: INK_100, valign: "middle",
+    fontFace: fontFaceFor(slide.textStyle), fontSize: 34, bold: true, color: INK_100, valign: "middle",
   });
   s.addShape("rect", {
     x: 0.5, y: 2.05, w: 1.2, h: 0.1,
@@ -426,7 +462,7 @@ function renderSummary(s: any, slide: SlideData) {
     });
     s.addText(bullet, {
       x: x + 0.3, y: y + 0.1, w: w - 0.6, h: rowH - 0.4,
-      fontFace: "Inter", fontSize: 15, color: INK_100, valign: "middle",
+      fontFace: fontFaceFor(slide.textStyle), fontSize: 15, color: INK_100, valign: "middle",
     });
   });
   // Extras as a small inset strip in the bottom-right.
@@ -467,16 +503,16 @@ function renderQnA(s: any, slide: SlideData) {
   });
   s.addText("?", {
     x: 5.7, y: 1.5, w: 1.9, h: 1.9,
-    fontFace: "Inter", fontSize: 80, bold: true, color: INK_100, align: "center", valign: "middle",
+    fontFace: fontFaceFor(slide.textStyle), fontSize: 80, bold: true, color: INK_100, align: "center", valign: "middle",
   });
   s.addText(slide.title, {
     x: 0.5, y: 3.8, w: 12.3, h: 1.2,
-    fontFace: "Inter", fontSize: 44, bold: true, color: INK_100, align: "center", valign: "middle",
+    fontFace: fontFaceFor(slide.textStyle), fontSize: 44, bold: true, color: INK_100, align: "center", valign: "middle",
   });
   if (slide.bullets?.[0]) {
     s.addText(slide.bullets[0], {
       x: 1.5, y: 5.1, w: 10.3, h: 0.7,
-      fontFace: "Inter", fontSize: 18, color: MUTED, align: "center",
+      fontFace: fontFaceFor(slide.textStyle), fontSize: 18, color: MUTED, align: "center",
     });
   }
 }
@@ -485,20 +521,21 @@ function renderQnA(s: any, slide: SlideData) {
 // Footer elements
 // ---------------------------------------------------------------------------
 
-function addSourcesFooter(s: any, sources?: SourceRef[]) {
+function addSourcesFooter(s: any, slide: SlideData) {
+  const sources = slide.sources;
   if (!sources || sources.length === 0) return;
   const text = sources
     .map((src, i) => `[${i + 1}] ${src.label}${src.url ? ` (${src.url})` : ""}`)
     .join("   ");
   s.addText(text, {
     x: 0.5, y: 6.95, w: 11.5, h: 0.45,
-    fontFace: "Inter", fontSize: 9, color: AURORA, italic: true, valign: "top",
+    fontFace: fontFaceFor(slide.textStyle), fontSize: 9, color: AURORA, italic: true, valign: "top",
   });
 }
 
-function addPageNumber(s: any, index: number) {
-  s.addText(`${index + 1}`, {
+function addPageNumber(s: any, slide: SlideData) {
+  s.addText(`${slide.index + 1}`, {
     x: 12.5, y: 7.0, w: 0.6, h: 0.35,
-    fontFace: "Inter", fontSize: 10, color: AURORA, align: "right",
+    fontFace: fontFaceFor(slide.textStyle), fontSize: 10, color: AURORA, align: "right",
   });
 }
