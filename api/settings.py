@@ -43,7 +43,7 @@ class Settings(BaseSettings):
     offline_mode: bool = Field(default=False)
 
     # --- Model defaults (overridable per request) ----------------------------
-    default_t2i_model: str = Field(default="google/imagen-4.0-generate-001")
+    default_t2i_model: str = Field(default="google/gemini-2.5-flash-image")
     default_chat_model: str = Field(default="google/gemini-2.0-flash")
     default_long_context_model: str = Field(default="google/gemini-2.5-flash")
     default_vision_model: str = Field(default="google/gemini-2.0-flash-vision")

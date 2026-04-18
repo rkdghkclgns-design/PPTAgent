@@ -1,21 +1,21 @@
-// Supabase Edge Function: generate (v14)
+// Supabase Edge Function: generate (v15)
 //
 // Resolution chain for the LLM key:
 //   ENV GOOGLE_API_KEY → ENV GEMINI_API_KEY → ENV ANTHROPIC_API_KEY
 //   → vault GOOGLE_API_KEY / GEMINI_API_KEY → vault ANTHROPIC_API_KEY
 //   → sample (graceful fallback, never 500)
 //
-// What v14 changes over v13:
-//  - Enforced deck structure for every deck_type: cover → objectives → content... → summary.
-//  - Per-slide `imageStyle` field ("photo" | "illustration" | "diagram" |
-//    "abstract") picked by the outline model so the image generator can
-//    adapt its art-direction to the content.
-//  - Per-slide `layoutVariant` field ("hero" | "split-right" | "split-left"
-//    | "stacked" | "quote") so the renderer varies composition across slides.
-//  - Nano-banana (Gemini 2.5 Flash Image) prompt now carries full art
-//    direction (style, lighting, palette, composition, aspect ratio) so
-//    citation-quality images come back.
-//  - Per-slide aspectRatio in Imagen calls (cover=16:9, content=4:3, etc.).
+// What v15 changes over v14:
+//  - Nano-banana (Gemini 2.5 Flash Image) is now the PRIMARY image generator
+//    for every style; Imagen 4 is only a fallback when nano-banana fails.
+//  - Attachment budget raised to 20k chars per file (from 8k) and the
+//    system prompt now *requires* the outline to cover the structure /
+//    headings of the attached material end-to-end, including a recap in
+//    the summary slide — fixes cases where the deck ran out before the
+//    attachment's content was exhausted.
+//  - Art direction sharpened (explicit "award-winning editorial",
+//    "ultra-detailed", "1024+ resolution" cues) so nano-banana returns
+//    crisper, higher-fidelity imagery.
 
 // deno-lint-ignore-file no-explicit-any
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
@@ -166,18 +166,29 @@ function systemPrompt(slideCount: number, language: string, deckType: DeckType):
     "imagePrompt should be CITATION-QUALITY: explicitly describe subject, setting, action, lighting, color palette, camera/style hints. Example: 'A Korean high-school classroom, students analyzing a climate data chart on screen, late-afternoon golden light, shallow depth of field, editorial photography, muted teal-orange palette'.",
     "When a slide visualises a process, comparison, hierarchy or timeline, ALSO provide a `diagram` field containing valid Mermaid syntax (flowchart, sequenceDiagram, pie, gantt, mindmap). Prefer flowchart LR for steps.",
     "When you cite a statistic, quotation or specific claim, populate the `sources` array: [{\"label\": \"Source title, Publisher (Year)\", \"url\": \"https://...\" optional}]. Leave empty when content is generic.",
-    "If the user supplied attachments, mine their facts, data and examples to fill the slides and cite them as {\"label\":\"첨부: <filename>\"}.",
+    "CRITICAL: If the user supplied attachment material, the deck MUST cover it end-to-end — walk through every major heading of the attached document in order, do not stop halfway. Infer the document's outline from its headings (#, ##, ###) and allocate slides proportionally across sections, not just the first section. Concrete facts, numbers, definitions and examples must come from the attachment — do NOT invent facts the attachment doesn't support. Every slide that uses attachment material must cite it as {\"label\":\"첨부: <filename>\"} in sources.",
+    "The final summary slide must RECAP the key sections of the attached material (or the deck's own content when no attachment is present) — name each major section or theme, do not just restate the title.",
     "Return ONLY valid JSON matching {\"slides\":[{kind,title,bullets,notes,imagePrompt,imageStyle,layoutVariant,diagram?,sources?}]}. No markdown, no prose outside the JSON.",
   ].filter(Boolean).join(" ");
 }
 
+// Total text budget across all attachments. Gemini 2.5 Flash handles ~1M
+// tokens; 80k chars (~20k tokens) leaves plenty of headroom for the system
+// prompt + slide JSON output.
+const PER_ATTACHMENT_CAP = 20000;
+const TOTAL_ATTACHMENT_CAP = 80000;
+
 function attachmentText(prompt: string, attachments: Attachment[]): string {
   const textBlobs: string[] = [];
+  let remaining = TOTAL_ATTACHMENT_CAP;
   for (const a of attachments) {
-    if (a.text) textBlobs.push(`### Attachment: ${a.name}\n${a.text.slice(0, 8000)}`);
+    if (!a.text || remaining <= 0) continue;
+    const take = Math.min(PER_ATTACHMENT_CAP, remaining, a.text.length);
+    textBlobs.push(`### Attachment: ${a.name}\n${a.text.slice(0, take)}`);
+    remaining -= take;
   }
   if (textBlobs.length === 0) return prompt;
-  return prompt + "\n\n---\nReference material from attachments:\n\n" + textBlobs.join("\n\n");
+  return prompt + "\n\n---\nReference material from attachments (cover the WHOLE material, not just the opening):\n\n" + textBlobs.join("\n\n");
 }
 
 function cleanTitle(raw: string): string {
@@ -385,34 +396,39 @@ async function callGeminiOnce(
 // an imageB64 entirely.
 // ---------------------------------------------------------------------------
 
-const IMAGE_FALLBACK_CHAIN = ["imagen-4.0-fast-generate-001", "gemini-2.5-flash-image"] as const;
+// Nano-banana first for every style (per user request for higher-quality,
+// more consistent imagery across the deck), then Imagen 4 as quality fallback.
+const IMAGE_FALLBACK_CHAIN = ["imagen-4.0-generate-001", "imagen-4.0-fast-generate-001"] as const;
 
 // Art-direction scaffold applied to every image prompt so results feel like a
-// coherent editorial deck instead of 10 disparate stock images.
+// coherent editorial deck instead of 10 disparate stock images. Each entry
+// leans on explicit quality cues ("award-winning", "ultra-detailed") which
+// nano-banana responds to strongly.
 const STYLE_DIRECTION: Record<ImageStyle, string> = {
   photo:
-    "Editorial documentary photography, natural light, shallow depth of field, cinematic color grading (muted teal-orange palette), magazine-cover framing, crisp focus, no text, no watermarks, no logos.",
+    "Award-winning editorial documentary photography, shot on full-frame camera, natural window light, shallow depth of field, cinematic color grading with muted teal-orange palette, magazine-cover composition, ultra-sharp focus, realistic skin and fabric texture, high dynamic range, 4K quality.",
   illustration:
-    "Modern editorial vector illustration, flat but textured, soft gradients, generous whitespace, coherent palette of deep indigo / warm amber / off-white, subtle grain, rounded geometric forms, no text, no captions, no logos.",
+    "Premium editorial vector illustration with subtle texture, award-winning design-magazine aesthetic, flat forms layered over soft noise-grain gradients, generous negative space, cohesive palette of deep indigo / warm amber / off-white, rounded geometric forms, confident linework, ultra-crisp at any size.",
   diagram:
-    "Clean infographic diagram, isometric perspective, labeled shapes replaced with abstract glyphs (no words), muted dark-academia palette with one accent color, minimal and legible, no actual letters anywhere.",
+    "Sleek isometric infographic, clean vector shapes, abstract glyph annotations in place of any real letters, muted dark-academia palette with a single vivid accent, subtle shadows, minimal and editorially refined, pixel-perfect edges.",
   abstract:
-    "Abstract conceptual composition: layered gradients, film-grain texture, volumetric light, soft bokeh particles, deep indigo to warm ember gradient, cinematic mood, no subject clutter, no text.",
+    "Cinematic abstract composition: layered volumetric gradients, film-grain texture, soft bokeh particles, deep indigo drifting into warm ember, moody chiaroscuro lighting, gallery-quality, ultra-detailed, evocative mood.",
 };
 
 function buildArtPrompt(userPrompt: string, style: ImageStyle, kind: SlideKind): string {
   const framing = kind === "cover" || kind === "summary"
-    ? "Hero full-bleed composition, subject centered or rule-of-thirds, negative space on one side for overlaid title."
+    ? "Hero full-bleed composition with strong focal point, subject on rule-of-thirds line, large negative space on the left or bottom-left so a title can overlay without clipping the subject."
     : kind === "objectives"
-      ? "Conceptual illustration representing goals/learning targets, suitable as a side-panel image."
+      ? "Conceptual illustration representing goals/learning targets, composed as a vertical or side-panel image that reads cleanly at half-slide size."
       : kind === "qna"
-        ? "Minimal ambient composition suggesting open discussion or reflection."
-        : "Balanced mid-distance composition suitable as a half-slide support image.";
+        ? "Minimal ambient composition with an open, contemplative mood — suggestive of dialogue or reflection, low visual noise."
+        : "Balanced mid-distance composition with one clear subject and supporting environmental detail; reads well at 42% slide width.";
   return [
     `SUBJECT: ${userPrompt}`,
     `STYLE: ${STYLE_DIRECTION[style]}`,
     `FRAMING: ${framing}`,
-    "Aspect ratio 16:9. Absolutely no written text, letters, numbers, captions, or signage inside the image.",
+    "Resolution: render at 1600x900 or higher, 16:9 aspect ratio. Photorealistic detail where applicable; crisp edges on illustrations.",
+    "STRICT: absolutely no written text, letters, numbers, captions, labels, watermarks, signage, or logos inside the image. The image must be text-free.",
   ].join("\n");
 }
 
@@ -516,11 +532,12 @@ async function generateSlideImage(
     return null;
   };
 
-  // For "illustration" / "abstract" styles, prefer nano-banana first — Imagen 4
-  // leans photorealistic and often misinterprets vector-illustration prompts.
-  const chain = (style === "illustration" || style === "abstract")
-    ? ["gemini-2.5-flash-image", primaryModel, "imagen-4.0-fast-generate-001"]
-    : [primaryModel, ...IMAGE_FALLBACK_CHAIN];
+  // Nano-banana (Gemini 2.5 Flash Image) is the primary generator for EVERY
+  // style. The user-selected Imagen model and its fast sibling are only
+  // tried if nano-banana fails (safety filter, transient error). This keeps
+  // the deck visually consistent — every image comes from the same model
+  // family — and maximises quality per nano-banana's editorial strengths.
+  const chain = ["gemini-2.5-flash-image", primaryModel, ...IMAGE_FALLBACK_CHAIN];
 
   for (const m of chain) {
     const b64 = await tryModel(m);
@@ -627,7 +644,7 @@ serve(async (req) => {
   const deckType: DeckType = (["lecture", "pitch", "report", "analysis", "generic"] as DeckType[]).includes(rawDeckType as DeckType)
     ? (rawDeckType as DeckType) : "generic";
   const chatModel = String(body.chat_model ?? "gemini-2.5-flash");
-  const rawImageModel = String(body.image_model ?? "imagen-4.0-generate-001")
+  const rawImageModel = String(body.image_model ?? "gemini-2.5-flash-image")
     .replace(/^google\//, "");
   // Imagen 3 was shut down on 2025-11-10 — transparently upgrade any stale
   // client-sent model ids to the Imagen 4 equivalents so old builds still work.

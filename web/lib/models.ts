@@ -39,9 +39,9 @@ export const MODEL_SLOT_HINT: Record<ModelSlot, string> = {
   design_agent: "HTML 슬라이드를 설계하는 최종 단계.",
 };
 
-/** Default model for each slot - Imagen is the global default per product decision. */
+/** Default model for each slot - nano-banana is the image default per product decision. */
 export const DEFAULT_MODELS: Record<ModelSlot, string> = {
-  t2i_model: "google/imagen-4.0-generate-001",
+  t2i_model: "google/gemini-2.5-flash-image",
   research_agent: "google/gemini-2.5-flash",
   long_context_model: "google/gemini-2.5-flash",
   vision_model: "google/gemini-2.0-flash-vision",
@@ -50,12 +50,19 @@ export const DEFAULT_MODELS: Record<ModelSlot, string> = {
 
 export const GOOGLE_MODELS: ModelOption[] = [
   {
+    id: "google/gemini-2.5-flash-image",
+    label: "Gemini 2.5 Flash Image (나노바나나)",
+    kind: "image",
+    family: "google",
+    defaultFor: ["t2i_model"],
+    notes: "기본값. 편집 일러스트·사진 품질이 가장 균일하며 안전 필터 통과율이 높음.",
+  },
+  {
     id: "google/imagen-4.0-generate-001",
     label: "Imagen 4 (Standard)",
     kind: "image",
     family: "google",
-    defaultFor: ["t2i_model"],
-    notes: "기본값. 16:9 커버와 인포그래픽에 최적.",
+    notes: "고해상도 실사 스타일에 최적. 나노바나나가 실패할 때 자동 폴백.",
   },
   {
     id: "google/imagen-4.0-fast-generate-001",

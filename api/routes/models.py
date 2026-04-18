@@ -17,11 +17,17 @@ router = APIRouter(tags=["models"])
 
 GOOGLE_MODELS: list[ModelOption] = [
     ModelOption(
+        id="google/gemini-2.5-flash-image",
+        label="Gemini 2.5 Flash Image (나노바나나)",
+        kind=ModelKind.image,
+        default_for=["t2i_model"],
+        notes="기본값. 편집 일러스트·사진 품질이 가장 균일하며 안전 필터 통과율이 높음.",
+    ),
+    ModelOption(
         id="google/imagen-4.0-generate-001",
         label="Imagen 4 (Standard)",
         kind=ModelKind.image,
-        default_for=["t2i_model"],
-        notes="기본 이미지 생성 모델. 고품질 16:9 커버/일러스트.",
+        notes="고해상도 실사 스타일에 최적. 나노바나나 폴백.",
     ),
     ModelOption(
         id="google/imagen-4.0-fast-generate-001",

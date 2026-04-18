@@ -116,10 +116,10 @@ export default function HomePage() {
           </GlassCard>
           <GlassCard interactive>
             <ImageIcon className="h-5 w-5 text-aurora" />
-            <h3 className="mt-5 text-lg font-semibold">Imagen-first</h3>
+            <h3 className="mt-5 text-lg font-semibold">나노바나나 우선 생성</h3>
             <p className="mt-2 text-sm text-muted-foreground">
-              기본 이미지 생성은 Google Imagen 3. 드롭다운에서 Gemini 2.0/2.5 계열로
-              언제든 교체 가능합니다.
+              Gemini 2.5 Flash Image(나노바나나)가 기본 생성기, Imagen 4는 폴백으로
+              동작합니다. 드롭다운에서 언제든 교체 가능합니다.
             </p>
           </GlassCard>
           <GlassCard interactive>
