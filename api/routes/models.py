@@ -17,17 +17,23 @@ router = APIRouter(tags=["models"])
 
 GOOGLE_MODELS: list[ModelOption] = [
     ModelOption(
-        id="google/imagen-3.0-generate-002",
-        label="Imagen 3.0 (Standard)",
+        id="google/imagen-4.0-generate-001",
+        label="Imagen 4 (Standard)",
         kind=ModelKind.image,
         default_for=["t2i_model"],
         notes="기본 이미지 생성 모델. 고품질 16:9 커버/일러스트.",
     ),
     ModelOption(
-        id="google/imagen-3.0-fast-generate-001",
-        label="Imagen 3.0 Fast",
+        id="google/imagen-4.0-fast-generate-001",
+        label="Imagen 4 Fast",
         kind=ModelKind.image,
         notes="빠른 프리뷰용.",
+    ),
+    ModelOption(
+        id="google/imagen-4.0-ultra-generate-001",
+        label="Imagen 4 Ultra",
+        kind=ModelKind.image,
+        notes="최고 품질(1장만 생성). 표지·키 비주얼용.",
     ),
     ModelOption(
         id="google/gemini-2.0-flash",

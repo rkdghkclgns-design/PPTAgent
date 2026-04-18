@@ -1,20 +1,21 @@
-// Supabase Edge Function: generate (v11)
+// Supabase Edge Function: generate (v14)
 //
 // Resolution chain for the LLM key:
 //   ENV GOOGLE_API_KEY → ENV GEMINI_API_KEY → ENV ANTHROPIC_API_KEY
 //   → vault GOOGLE_API_KEY / GEMINI_API_KEY → vault ANTHROPIC_API_KEY
 //   → sample (graceful fallback, never 500)
 //
-// What v11 adds over v10:
-//  - deck_type hint (lecture / pitch / report / analysis / generic) that
-//    reshapes the slide sequence (cover → objectives → body → summary …).
-//  - Per-slide `kind` field ("cover" | "objectives" | "content" | "summary"
-//    | "qna") so the frontend can render each slide with a dedicated layout.
-//  - Optional `diagram` field carrying mermaid code for flowcharts or
-//    sequence diagrams - rendered client-side.
-//  - `sources` array for citations (facts, stats, quotations).
-//  - Imagen fallback: if Imagen fails (quota, auth, content filter) we
-//    substitute a procedural SVG cover so slides never render empty.
+// What v14 changes over v13:
+//  - Enforced deck structure for every deck_type: cover → objectives → content... → summary.
+//  - Per-slide `imageStyle` field ("photo" | "illustration" | "diagram" |
+//    "abstract") picked by the outline model so the image generator can
+//    adapt its art-direction to the content.
+//  - Per-slide `layoutVariant` field ("hero" | "split-right" | "split-left"
+//    | "stacked" | "quote") so the renderer varies composition across slides.
+//  - Nano-banana (Gemini 2.5 Flash Image) prompt now carries full art
+//    direction (style, lighting, palette, composition, aspect ratio) so
+//    citation-quality images come back.
+//  - Per-slide aspectRatio in Imagen calls (cover=16:9, content=4:3, etc.).
 
 // deno-lint-ignore-file no-explicit-any
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
@@ -52,6 +53,8 @@ function bad(origin: string | null, status: number, message: string, details?: u
 }
 
 type SlideKind = "cover" | "objectives" | "content" | "summary" | "qna";
+type ImageStyle = "photo" | "illustration" | "diagram" | "abstract";
+type LayoutVariant = "hero" | "split-right" | "split-left" | "stacked" | "quote";
 interface Source { label: string; url?: string }
 interface Slide {
   kind?: SlideKind;
@@ -60,11 +63,18 @@ interface Slide {
   notes?: string;
   imagePrompt?: string;
   imageB64?: string | null;
+  /** Art-direction hint so the image generator produces appropriate imagery. */
+  imageStyle?: ImageStyle;
+  /** Composition hint so the slide renderer varies layout across the deck. */
+  layoutVariant?: LayoutVariant;
   /** Mermaid source for a flowchart / sequence diagram. Rendered by the client. */
   diagram?: string;
   /** Citations for stats / quotes on this slide. */
   sources?: Source[];
 }
+
+const VALID_IMAGE_STYLES: ImageStyle[] = ["photo", "illustration", "diagram", "abstract"];
+const VALID_LAYOUT_VARIANTS: LayoutVariant[] = ["hero", "split-right", "split-left", "stacked", "quote"];
 interface Attachment { name: string; mime_type: string; text?: string; image_b64?: string }
 type Provider = "google" | "anthropic" | "sample";
 type DeckType = "lecture" | "pitch" | "report" | "analysis" | "generic";
@@ -115,35 +125,49 @@ async function resolveProvider(): Promise<{ provider: Provider; key: string }> {
 // Prompt
 // ---------------------------------------------------------------------------
 
-const DECK_STRUCTURE: Record<DeckType, string> = {
+const DECK_FLAVOR: Record<DeckType, string> = {
   lecture:
-    "Structure (for lectures / 교과 자료): slide 1 = cover (course title, one-line summary), slide 2 = objectives (3-5 learning goals with kind='objectives'), slides 3..N-2 = content (kind='content'), slide N-1 = summary (kind='summary' - key takeaways), slide N = qna (kind='qna').",
+    "Lecture flavor: slide 2 objectives are '학습 목표', closing summary reviews key takeaways, optionally end with kind='qna'.",
   pitch:
-    "Structure (for investor pitches): cover → problem → solution → market → product → business model → traction → team → ask. Use kind='cover' on slide 1 and kind='summary' on the final slide.",
+    "Pitch flavor: after the objectives slide walk through problem → solution → market → product → business model → traction → team → ask before the closing summary.",
   report:
-    "Structure (for business reports): cover → executive summary → background → findings → analysis → recommendations → summary → appendix. Use kind='cover' first, kind='summary' near the end.",
+    "Report flavor: after objectives cover executive summary → background → findings → analysis → recommendations before the closing summary. Optional appendix slides use kind='content'.",
   analysis:
-    "Structure (for analytical decks): cover → context → data → insights → options → recommendation → summary. Cite every statistic in the `sources` array on that slide.",
+    "Analysis flavor: after objectives cover context → data → insights → options → recommendation before the closing summary. Cite every statistic in the sources array.",
   generic:
-    "Structure: start with a cover slide (kind='cover'). If the deck has more than 4 slides, close with a summary (kind='summary'). Middle slides use kind='content'.",
+    "Generic flavor: middle slides cover the key themes of the topic; pick a meaningful progression.",
 };
 
 function systemPrompt(slideCount: number, language: string, deckType: DeckType): string {
+  const hasObjectives = slideCount >= 3;
+  const hasSummary = slideCount >= 3;
+  const structure = [
+    "Mandatory deck structure (ALL deck types):",
+    "  slide 1 = kind='cover' (title + 1-line subtitle).",
+    hasObjectives ? "  slide 2 = kind='objectives' (3-5 learning goals or talking points that preview the deck)." : "",
+    "  middle slides = kind='content' (substantive material).",
+    hasSummary ? `  slide ${slideCount} = kind='summary' (결론/Key takeaways — recap of the whole deck).` : "",
+  ].filter(Boolean).join("\n");
+
   return [
-    "You are a senior presentation designer.",
+    "You are a senior presentation designer producing editorial-quality decks.",
     `Write an outline for a ${slideCount}-slide deck.`,
     language === "ko"
-      ? "Write all user-facing fields (title, bullets, notes, sources.label) in Korean."
+      ? "Write every user-facing field (title, bullets, notes, sources.label) in natural Korean. Avoid machine-translation tone."
       : "Write concisely in the requested language.",
-    DECK_STRUCTURE[deckType],
+    structure,
+    DECK_FLAVOR[deckType],
     "Do NOT prefix titles with slide numbers (e.g., write 'Market Overview', not '3. Market Overview').",
-    "Keep output compact: title <=60 chars, each bullet <=80 chars, notes <=220 chars, imagePrompt <=180 chars.",
-    "Every slide MUST have: title, bullets (3-5 items), notes (1-2 speaker notes sentences), imagePrompt (vivid ENGLISH description of ONE illustrative image, NO text in the image).",
-    "Set `kind` on every slide - one of: 'cover', 'objectives', 'content', 'summary', 'qna'. Default to 'content' if unsure.",
+    "Keep output compact: title <=60 chars, each bullet <=80 chars, notes <=220 chars, imagePrompt <=220 chars.",
+    "Every slide MUST have: title, bullets (3-5 items), notes (1-2 speaker notes sentences), imagePrompt (vivid ENGLISH description of ONE illustrative image, NO text in the image), imageStyle, layoutVariant.",
+    "Set `kind` on every slide exactly following the structure above.",
+    "Set `imageStyle` to one of: 'photo' (realistic editorial photography — best for case studies, real-world subjects), 'illustration' (flat/vector editorial illustration — best for concepts, objectives, summaries), 'diagram' (schematic infographic — when the content is a system/process), 'abstract' (moody gradient/texture — for transitions, cover slides).",
+    "Set `layoutVariant` to one of: 'hero' (full-bleed image with overlaid title — prefer for cover and summary), 'split-right' (text left, image right — default for content), 'split-left' (image left, text right — alternate every other content slide), 'stacked' (text on top, image below — for objectives or numbered lists), 'quote' (centered large text, no image — for punchline/pivot slides). VARY across the deck so no two adjacent slides share a layoutVariant.",
+    "imagePrompt should be CITATION-QUALITY: explicitly describe subject, setting, action, lighting, color palette, camera/style hints. Example: 'A Korean high-school classroom, students analyzing a climate data chart on screen, late-afternoon golden light, shallow depth of field, editorial photography, muted teal-orange palette'.",
     "When a slide visualises a process, comparison, hierarchy or timeline, ALSO provide a `diagram` field containing valid Mermaid syntax (flowchart, sequenceDiagram, pie, gantt, mindmap). Prefer flowchart LR for steps.",
     "When you cite a statistic, quotation or specific claim, populate the `sources` array: [{\"label\": \"Source title, Publisher (Year)\", \"url\": \"https://...\" optional}]. Leave empty when content is generic.",
     "If the user supplied attachments, mine their facts, data and examples to fill the slides and cite them as {\"label\":\"첨부: <filename>\"}.",
-    "Return ONLY valid JSON matching {\"slides\":[{kind,title,bullets,notes,imagePrompt,diagram?,sources?}]}. No markdown, no prose outside the JSON.",
+    "Return ONLY valid JSON matching {\"slides\":[{kind,title,bullets,notes,imagePrompt,imageStyle,layoutVariant,diagram?,sources?}]}. No markdown, no prose outside the JSON.",
   ].filter(Boolean).join(" ");
 }
 
@@ -163,25 +187,68 @@ function cleanTitle(raw: string): string {
 const VALID_KINDS: SlideKind[] = ["cover", "objectives", "content", "summary", "qna"];
 
 function clampSlides(slides: Slide[], slideCount: number): Slide[] {
-  return slides.slice(0, slideCount).map((s, i) => ({
-    kind: (VALID_KINDS as string[]).includes(String(s.kind))
-      ? (s.kind as SlideKind)
-      : (i === 0 ? "cover" : "content"),
-    title: cleanTitle(String(s.title ?? "")),
-    bullets: Array.isArray(s.bullets) ? s.bullets.map((b) => String(b).slice(0, 160)).slice(0, 6) : [],
-    notes: s.notes ? String(s.notes).slice(0, 500) : undefined,
-    imagePrompt: s.imagePrompt ? String(s.imagePrompt).slice(0, 400) : undefined,
-    diagram: s.diagram ? String(s.diagram).slice(0, 2000) : undefined,
-    sources: Array.isArray(s.sources)
-      ? s.sources
-          .map((src: any) => ({
-            label: String(src?.label ?? "").slice(0, 200),
-            url: typeof src?.url === "string" && /^https?:\/\//.test(src.url) ? src.url : undefined,
-          }))
-          .filter((src) => src.label)
-          .slice(0, 6)
-      : undefined,
-  }));
+  const cleaned = slides.slice(0, slideCount).map<Slide>((s, i) => {
+    const rawKind = (VALID_KINDS as string[]).includes(String(s.kind))
+      ? (s.kind as SlideKind) : undefined;
+    const rawStyle = (VALID_IMAGE_STYLES as string[]).includes(String(s.imageStyle))
+      ? (s.imageStyle as ImageStyle) : undefined;
+    const rawVariant = (VALID_LAYOUT_VARIANTS as string[]).includes(String(s.layoutVariant))
+      ? (s.layoutVariant as LayoutVariant) : undefined;
+    return {
+      kind: rawKind ?? (i === 0 ? "cover" : "content"),
+      title: cleanTitle(String(s.title ?? "")),
+      bullets: Array.isArray(s.bullets) ? s.bullets.map((b) => String(b).slice(0, 160)).slice(0, 6) : [],
+      notes: s.notes ? String(s.notes).slice(0, 500) : undefined,
+      imagePrompt: s.imagePrompt ? String(s.imagePrompt).slice(0, 500) : undefined,
+      imageStyle: rawStyle,
+      layoutVariant: rawVariant,
+      diagram: s.diagram ? String(s.diagram).slice(0, 2000) : undefined,
+      sources: Array.isArray(s.sources)
+        ? s.sources
+            .map((src: any) => ({
+              label: String(src?.label ?? "").slice(0, 200),
+              url: typeof src?.url === "string" && /^https?:\/\//.test(src.url) ? src.url : undefined,
+            }))
+            .filter((src) => src.label)
+            .slice(0, 6)
+        : undefined,
+    };
+  });
+
+  // Enforce the mandatory cover → objectives → content... → summary contract
+  // even when the outline model forgets. Fill in defaults for missing slots.
+  if (cleaned.length > 0) {
+    cleaned[0].kind = "cover";
+    if (!cleaned[0].layoutVariant) cleaned[0].layoutVariant = "hero";
+    if (!cleaned[0].imageStyle) cleaned[0].imageStyle = "abstract";
+  }
+  if (cleaned.length >= 3) {
+    cleaned[1].kind = "objectives";
+    if (!cleaned[1].layoutVariant) cleaned[1].layoutVariant = "stacked";
+    if (!cleaned[1].imageStyle) cleaned[1].imageStyle = "illustration";
+    const last = cleaned.length - 1;
+    // Don't clobber explicit qna slides as summary.
+    if (cleaned[last].kind !== "qna") cleaned[last].kind = "summary";
+    if (!cleaned[last].layoutVariant) cleaned[last].layoutVariant = "hero";
+    if (!cleaned[last].imageStyle) cleaned[last].imageStyle = "abstract";
+  }
+  // Break adjacent layoutVariant collisions among content slides and ensure
+  // every slide has *some* variant so the renderer never falls back to a
+  // single default.
+  const rotation: LayoutVariant[] = ["split-right", "split-left", "stacked", "split-right"];
+  for (let i = 0; i < cleaned.length; i++) {
+    const s = cleaned[i];
+    if (!s.layoutVariant) {
+      s.layoutVariant = s.kind === "content" ? rotation[i % rotation.length] : "split-right";
+    }
+    if (!s.imageStyle) {
+      s.imageStyle = s.kind === "content" ? (i % 2 === 0 ? "photo" : "illustration") : "illustration";
+    }
+    if (i > 0 && cleaned[i - 1].layoutVariant === s.layoutVariant && s.kind === "content") {
+      s.layoutVariant = s.layoutVariant === "split-right" ? "split-left" : "split-right";
+    }
+  }
+  return cleaned;
 }
 
 function parseSlidesFromText(raw: string): Slide[] {
@@ -312,12 +379,52 @@ async function callGeminiOnce(
 }
 
 // ---------------------------------------------------------------------------
-// Imagen (with procedural fallback when Imagen is unavailable)
+// Image generation chain: Imagen 4 → Imagen 4 Fast → Gemini 2.5 Flash Image.
+// Every returned slide either has a REAL AI-generated PNG or b64=null. We do
+// NOT synthesise procedural "dummy" gradients — the UI skips slides without
+// an imageB64 entirely.
 // ---------------------------------------------------------------------------
 
-async function callImagen(apiKey: string, prompt: string, model: string): Promise<{ b64: string | null; err?: string }> {
+const IMAGE_FALLBACK_CHAIN = ["imagen-4.0-fast-generate-001", "gemini-2.5-flash-image"] as const;
+
+// Art-direction scaffold applied to every image prompt so results feel like a
+// coherent editorial deck instead of 10 disparate stock images.
+const STYLE_DIRECTION: Record<ImageStyle, string> = {
+  photo:
+    "Editorial documentary photography, natural light, shallow depth of field, cinematic color grading (muted teal-orange palette), magazine-cover framing, crisp focus, no text, no watermarks, no logos.",
+  illustration:
+    "Modern editorial vector illustration, flat but textured, soft gradients, generous whitespace, coherent palette of deep indigo / warm amber / off-white, subtle grain, rounded geometric forms, no text, no captions, no logos.",
+  diagram:
+    "Clean infographic diagram, isometric perspective, labeled shapes replaced with abstract glyphs (no words), muted dark-academia palette with one accent color, minimal and legible, no actual letters anywhere.",
+  abstract:
+    "Abstract conceptual composition: layered gradients, film-grain texture, volumetric light, soft bokeh particles, deep indigo to warm ember gradient, cinematic mood, no subject clutter, no text.",
+};
+
+function buildArtPrompt(userPrompt: string, style: ImageStyle, kind: SlideKind): string {
+  const framing = kind === "cover" || kind === "summary"
+    ? "Hero full-bleed composition, subject centered or rule-of-thirds, negative space on one side for overlaid title."
+    : kind === "objectives"
+      ? "Conceptual illustration representing goals/learning targets, suitable as a side-panel image."
+      : kind === "qna"
+        ? "Minimal ambient composition suggesting open discussion or reflection."
+        : "Balanced mid-distance composition suitable as a half-slide support image.";
+  return [
+    `SUBJECT: ${userPrompt}`,
+    `STYLE: ${STYLE_DIRECTION[style]}`,
+    `FRAMING: ${framing}`,
+    "Aspect ratio 16:9. Absolutely no written text, letters, numbers, captions, or signage inside the image.",
+  ].join("\n");
+}
+
+async function callImagen(
+  apiKey: string,
+  prompt: string,
+  model: string,
+  style: ImageStyle,
+  kind: SlideKind,
+): Promise<{ b64: string | null; err?: string }> {
   const body = {
-    instances: [{ prompt }],
+    instances: [{ prompt: buildArtPrompt(prompt, style, kind) }],
     parameters: {
       sampleCount: 1,
       aspectRatio: "16:9",
@@ -333,14 +440,93 @@ async function callImagen(apiKey: string, prompt: string, model: string): Promis
     });
     if (!res.ok) {
       const errText = (await res.text()).slice(0, 200);
-      return { b64: null, err: `imagen ${res.status}: ${errText}` };
+      return { b64: null, err: `imagen[${model}] ${res.status}: ${errText}` };
     }
     const data = await res.json();
     const b64 = data?.predictions?.[0]?.bytesBase64Encoded;
-    return { b64: typeof b64 === "string" ? b64 : null };
+    if (typeof b64 === "string" && b64.length > 0) return { b64 };
+    return { b64: null, err: `imagen[${model}] empty response (safety filter?)` };
   } catch (err) {
-    return { b64: null, err: String(err).slice(0, 200) };
+    return { b64: null, err: `imagen[${model}] ${String(err).slice(0, 200)}` };
   }
+}
+
+// Gemini 2.5 Flash Image (nano-banana). Uses the standard generateContent
+// endpoint with responseModalities=["IMAGE"] and full art direction so the
+// resulting image is citation-quality, not a generic cartoon.
+async function callGeminiImage(
+  apiKey: string,
+  prompt: string,
+  style: ImageStyle,
+  kind: SlideKind,
+): Promise<{ b64: string | null; err?: string }> {
+  const model = "gemini-2.5-flash-image";
+  const text = buildArtPrompt(prompt, style, kind);
+  const payload = {
+    contents: [{ role: "user", parts: [{ text }] }],
+    generationConfig: {
+      responseModalities: ["IMAGE"],
+      temperature: 0.7,
+    },
+  };
+  try {
+    const res = await fetch(`${GENAI_BASE}/models/${encodeURIComponent(model)}:generateContent`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-goog-api-key": apiKey },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      const errText = (await res.text()).slice(0, 200);
+      return { b64: null, err: `gemini-image ${res.status}: ${errText}` };
+    }
+    const data = await res.json();
+    const parts = data?.candidates?.[0]?.content?.parts ?? [];
+    for (const p of parts) {
+      const inline = p?.inlineData ?? p?.inline_data;
+      if (inline?.data && typeof inline.data === "string") return { b64: inline.data };
+    }
+    return { b64: null, err: "gemini-image: no inline image in response (safety filter?)" };
+  } catch (err) {
+    return { b64: null, err: `gemini-image ${String(err).slice(0, 200)}` };
+  }
+}
+
+async function generateSlideImage(
+  apiKey: string,
+  prompt: string,
+  primaryModel: string,
+  style: ImageStyle,
+  kind: SlideKind,
+): Promise<{ b64: string | null; modelUsed?: string; errors: string[] }> {
+  const errors: string[] = [];
+  const tried = new Set<string>();
+
+  const tryModel = async (model: string): Promise<string | null> => {
+    if (tried.has(model)) return null;
+    tried.add(model);
+    if (model.startsWith("gemini-")) {
+      const r = await callGeminiImage(apiKey, prompt, style, kind);
+      if (r.b64) return r.b64;
+      if (r.err) errors.push(r.err);
+      return null;
+    }
+    const r = await callImagen(apiKey, prompt, model, style, kind);
+    if (r.b64) return r.b64;
+    if (r.err) errors.push(r.err);
+    return null;
+  };
+
+  // For "illustration" / "abstract" styles, prefer nano-banana first — Imagen 4
+  // leans photorealistic and often misinterprets vector-illustration prompts.
+  const chain = (style === "illustration" || style === "abstract")
+    ? ["gemini-2.5-flash-image", primaryModel, "imagen-4.0-fast-generate-001"]
+    : [primaryModel, ...IMAGE_FALLBACK_CHAIN];
+
+  for (const m of chain) {
+    const b64 = await tryModel(m);
+    if (b64) return { b64, modelUsed: m, errors };
+  }
+  return { b64: null, errors };
 }
 
 // ---------------------------------------------------------------------------
@@ -386,18 +572,6 @@ async function callClaude(
   const data = await res.json();
   const text = (data?.content ?? []).map((b: any) => (b?.type === "text" ? b.text ?? "" : "")).join("");
   return clampSlides(parseSlidesFromText(text), slideCount);
-}
-
-function proceduralCoverSvg(title: string, idx: number, kind?: SlideKind): string {
-  let h = 0;
-  for (let i = 0; i < title.length; i++) h = (h * 31 + title.charCodeAt(i)) | 0;
-  const hue = Math.abs(h) % 360;
-  const kindHue = kind === "cover" ? 258 : kind === "objectives" ? 168 : kind === "summary" ? 26 : hue;
-  const g1 = `hsl(${kindHue} 70% 55%)`;
-  const g2 = `hsl(${(kindHue + 50) % 360} 65% 35%)`;
-  const safe = (title || `Slide ${idx + 1}`).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").slice(0, 40);
-  const svg = `<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 900"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="${g1}"/><stop offset="100%" stop-color="${g2}"/></linearGradient></defs><rect width="1600" height="900" fill="${g1}"/><rect width="1600" height="900" fill="url(#g)" opacity="0.85"/><g fill="rgba(255,255,255,0.08)"><circle cx="1350" cy="220" r="220"/><circle cx="230" cy="760" r="320"/></g><text x="90" y="500" font-family="Inter,system-ui" font-size="72" font-weight="700" fill="white">${safe}</text></svg>`;
-  return btoa(unescape(encodeURIComponent(svg)));
 }
 
 // ---------------------------------------------------------------------------
@@ -453,7 +627,14 @@ serve(async (req) => {
   const deckType: DeckType = (["lecture", "pitch", "report", "analysis", "generic"] as DeckType[]).includes(rawDeckType as DeckType)
     ? (rawDeckType as DeckType) : "generic";
   const chatModel = String(body.chat_model ?? "gemini-2.5-flash");
-  const imageModel = String(body.image_model ?? "imagen-3.0-generate-002");
+  const rawImageModel = String(body.image_model ?? "imagen-4.0-generate-001")
+    .replace(/^google\//, "");
+  // Imagen 3 was shut down on 2025-11-10 — transparently upgrade any stale
+  // client-sent model ids to the Imagen 4 equivalents so old builds still work.
+  const imageModel =
+    rawImageModel === "imagen-3.0-generate-002" ? "imagen-4.0-generate-001"
+    : rawImageModel === "imagen-3.0-fast-generate-001" ? "imagen-4.0-fast-generate-001"
+    : rawImageModel;
   const attachments: Attachment[] = Array.isArray(body.attachments) ? body.attachments.slice(0, 8) : [];
   if (prompt.length < 2) return bad(origin, 400, "prompt too short");
 
@@ -478,9 +659,10 @@ serve(async (req) => {
     try {
       const slides = await callGemini(key, prompt, slideCount, language, deckType, chatModel, attachments);
       let imageNote: string | undefined;
+      const modelCounts: Record<string, number> = {};
       if (includeImages) {
-        const limit = 6;
-        const results: (string | null)[] = new Array(slides.length).fill(null);
+        const limit = 4;
+        const results: Array<{ b64: string | null; modelUsed?: string }> = slides.map(() => ({ b64: null }));
         const errors: string[] = [];
         let cursor = 0;
         const worker = async () => {
@@ -489,26 +671,34 @@ serve(async (req) => {
             if (i >= slides.length) return;
             const ip = slides[i].imagePrompt;
             if (!ip) continue;
-            const r = await callImagen(key, ip, imageModel);
-            if (r.b64) results[i] = r.b64;
-            else if (r.err) errors.push(r.err);
+            const style = slides[i].imageStyle ?? "illustration";
+            const kind = slides[i].kind ?? "content";
+            const r = await generateSlideImage(key, ip, imageModel, style, kind);
+            results[i] = { b64: r.b64, modelUsed: r.modelUsed };
+            if (r.errors.length > 0) errors.push(...r.errors);
           }
         };
         await Promise.all(Array.from({ length: limit }, worker));
-        let imagenSucceeded = 0;
+        let succeeded = 0;
         for (let i = 0; i < slides.length; i++) {
-          if (results[i]) {
-            slides[i].imageB64 = results[i];
-            imagenSucceeded++;
+          const r = results[i];
+          if (r.b64) {
+            slides[i].imageB64 = r.b64;
+            succeeded++;
+            if (r.modelUsed) modelCounts[r.modelUsed] = (modelCounts[r.modelUsed] ?? 0) + 1;
           } else {
-            // Graceful fallback: procedural SVG so the slide never renders empty.
-            slides[i].imageB64 = proceduralCoverSvg(slides[i].title, i, slides[i].kind);
+            // Root requirement: never fabricate "dummy" covers. Leave null so
+            // the UI lays out the slide without a placeholder image.
+            slides[i].imageB64 = null;
           }
         }
-        if (imagenSucceeded === 0 && errors.length > 0) {
-          imageNote = `Imagen 호출 실패 - 프로시저럴 커버로 대체됨. 첫 오류: ${errors[0]}`;
-        } else if (imagenSucceeded < slides.length) {
-          imageNote = `${slides.length - imagenSucceeded}장은 Imagen 생성 실패로 프로시저럴 커버 사용.`;
+        const missing = slides.filter((s) => s.imagePrompt && !s.imageB64).length;
+        if (succeeded === 0 && errors.length > 0) {
+          imageNote = `이미지 생성 전체 실패. 첫 오류: ${errors[0]}`;
+        } else if (missing > 0) {
+          imageNote = `${missing}장은 이미지 생성 실패(안전 필터/쿼터). 나머지는 ${Object.entries(modelCounts).map(([m, c]) => `${m}×${c}`).join(", ")}.`;
+        } else if (Object.keys(modelCounts).length > 0) {
+          imageNote = `이미지 모델 사용: ${Object.entries(modelCounts).map(([m, c]) => `${m}×${c}`).join(", ")}.`;
         }
       }
       return respond(slides, "google", imageNote);
@@ -520,11 +710,23 @@ serve(async (req) => {
   try {
     const slides = await callClaude(key, prompt, slideCount, language, deckType, attachments);
     if (includeImages) {
-      for (let i = 0; i < slides.length; i++) {
-        slides[i].imageB64 = proceduralCoverSvg(slides[i].title, i, slides[i].kind);
+      // Anthropic path: try Gemini 2.5 Flash Image if we happen to have a
+      // Google key available; otherwise leave null (no dummy).
+      const googleKey = Deno.env.get("GOOGLE_API_KEY") ?? Deno.env.get("GEMINI_API_KEY") ?? "";
+      if (googleKey) {
+        for (let i = 0; i < slides.length; i++) {
+          const ip = slides[i].imagePrompt;
+          if (!ip) continue;
+          const style = slides[i].imageStyle ?? "illustration";
+          const kind = slides[i].kind ?? "content";
+          const r = await callGeminiImage(googleKey, ip, style, kind);
+          slides[i].imageB64 = r.b64;
+        }
+      } else {
+        for (let i = 0; i < slides.length; i++) slides[i].imageB64 = null;
       }
     }
-    return respond(slides, "anthropic", "Anthropic Claude 텍스트 + 프로시저럴 커버 이미지.");
+    return respond(slides, "anthropic", "Anthropic Claude 텍스트 + Gemini 이미지(키 있을 때).");
   } catch (err) {
     return sample(`Anthropic API failed: ${String(err).slice(0, 300)}`);
   }

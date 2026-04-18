@@ -177,46 +177,132 @@ function renderObjectives(s: any, slide: SlideData) {
 }
 
 function renderContent(s: any, slide: SlideData, diagramPng?: string) {
-  const hasVisual = Boolean(slide.imageUrl || diagramPng);
-  const leftW = hasVisual ? 6.7 : 12.3;
+  const variant = slide.layoutVariant ?? "split-right";
+  const visualSrc = diagramPng ?? slide.imageUrl;
+  const caption = diagramPng ? "Diagram · Mermaid" : slide.imagePrompt?.slice(0, 120);
+
+  // Title + accent rule placement depends on whether the image is full-bleed.
+  if (variant === "hero" && visualSrc) {
+    renderHeroContent(s, slide, visualSrc, caption);
+    return;
+  }
+  if (variant === "quote") {
+    renderQuoteContent(s, slide);
+    return;
+  }
+  if (variant === "stacked") {
+    renderStackedContent(s, slide, visualSrc, caption);
+    return;
+  }
+  // split-left and split-right
+  renderSplitContent(s, slide, variant === "split-left", visualSrc, caption);
+}
+
+function renderSplitContent(s: any, slide: SlideData, imageLeft: boolean, visualSrc: string | undefined, caption?: string) {
+  const hasVisual = Boolean(visualSrc);
+  const textX = hasVisual && imageLeft ? 7.4 : 0.5;
+  const textW = hasVisual ? 5.4 : 12.3;
+  const imageX = imageLeft ? 0.5 : 7.4;
 
   s.addText(slide.title, {
-    x: 0.5, y: 0.45, w: leftW, h: 1.1,
+    x: textX, y: 0.45, w: textW, h: 1.1,
     fontFace: "Inter", fontSize: 30, bold: true, color: INK_100, valign: "middle",
   });
   s.addShape("rect", {
-    x: 0.5, y: 1.55, w: 0.9, h: 0.08,
+    x: textX, y: 1.55, w: 0.9, h: 0.08,
     fill: { color: ELECTRON }, line: { color: ELECTRON, width: 0 },
   });
   if (slide.bullets?.length) {
     s.addText(
-      slide.bullets.map((b) => ({
-        text: b,
-        options: { breakLine: true, bullet: { code: "2022" } },
-      })),
-      {
-        x: 0.5, y: 1.9, w: leftW, h: 4.5,
-        fontFace: "Inter", fontSize: 16, color: INK_100, valign: "top", paraSpaceAfter: 8,
-      },
+      slide.bullets.map((b) => ({ text: b, options: { breakLine: true, bullet: { code: "2022" } } })),
+      { x: textX, y: 1.9, w: textW, h: 4.5, fontFace: "Inter", fontSize: 16, color: INK_100, valign: "top", paraSpaceAfter: 8 },
     );
   }
-
-  if (hasVisual) {
-    const visualSrc = diagramPng ?? slide.imageUrl;
-    if (visualSrc) {
-      s.addImage({
-        data: visualSrc,
-        x: 7.4, y: 0.9, w: 5.4, h: 5.4,
-        sizing: { type: "contain", w: 5.4, h: 5.4 },
-      });
-    }
-    const caption = diagramPng ? "Diagram · Mermaid" : slide.imagePrompt?.slice(0, 120);
+  if (hasVisual && visualSrc) {
+    s.addImage({
+      data: visualSrc,
+      x: imageX, y: 0.9, w: 5.4, h: 5.4,
+      sizing: { type: "cover", w: 5.4, h: 5.4 },
+    });
     if (caption) {
       s.addText(caption, {
-        x: 7.4, y: 6.35, w: 5.4, h: 0.4,
+        x: imageX, y: 6.35, w: 5.4, h: 0.4,
         fontFace: "Inter", fontSize: 9, color: MUTED, italic: true, valign: "top",
       });
     }
+  }
+}
+
+function renderHeroContent(s: any, slide: SlideData, visualSrc: string, caption?: string) {
+  s.addImage({ data: visualSrc, x: 0, y: 0, w: 13.333, h: 7.5, sizing: { type: "cover", w: 13.333, h: 7.5 } });
+  // Readability scrim over the bottom half.
+  s.addShape("rect", {
+    x: 0, y: 3.5, w: 13.333, h: 4.0,
+    fill: { color: INK_950, transparency: 20 },
+    line: { color: INK_950, width: 0 },
+  });
+  s.addText(slide.title, {
+    x: 0.6, y: 3.9, w: 12, h: 1.2,
+    fontFace: "Inter", fontSize: 36, bold: true, color: INK_100, valign: "middle",
+  });
+  if (slide.bullets?.length) {
+    s.addText(
+      slide.bullets.slice(0, 3).map((b) => ({ text: b, options: { breakLine: true, bullet: { code: "2022" } } })),
+      { x: 0.6, y: 5.2, w: 12, h: 1.6, fontFace: "Inter", fontSize: 15, color: INK_100, valign: "top", paraSpaceAfter: 6 },
+    );
+  }
+  if (caption) {
+    s.addText(caption, {
+      x: 0.6, y: 6.9, w: 12, h: 0.3,
+      fontFace: "Inter", fontSize: 8, color: MUTED, italic: true, valign: "top",
+    });
+  }
+}
+
+function renderStackedContent(s: any, slide: SlideData, visualSrc?: string, caption?: string) {
+  s.addText(slide.title, {
+    x: 0.5, y: 0.45, w: 12.3, h: 1.0,
+    fontFace: "Inter", fontSize: 28, bold: true, color: INK_100, valign: "middle",
+  });
+  s.addShape("rect", {
+    x: 0.5, y: 1.5, w: 0.9, h: 0.08,
+    fill: { color: ELECTRON }, line: { color: ELECTRON, width: 0 },
+  });
+  if (slide.bullets?.length) {
+    s.addText(
+      slide.bullets.slice(0, 4).map((b) => ({ text: b, options: { breakLine: true, bullet: { code: "2022" } } })),
+      { x: 0.5, y: 1.75, w: 12.3, h: 2.2, fontFace: "Inter", fontSize: 15, color: INK_100, valign: "top", paraSpaceAfter: 6 },
+    );
+  }
+  if (visualSrc) {
+    s.addImage({ data: visualSrc, x: 0.5, y: 4.1, w: 12.3, h: 2.6, sizing: { type: "cover", w: 12.3, h: 2.6 } });
+    if (caption) {
+      s.addText(caption, {
+        x: 0.5, y: 6.75, w: 12.3, h: 0.3,
+        fontFace: "Inter", fontSize: 9, color: MUTED, italic: true, valign: "top",
+      });
+    }
+  }
+}
+
+function renderQuoteContent(s: any, slide: SlideData) {
+  s.addShape("rect", {
+    x: 0, y: 0, w: 13.333, h: 7.5,
+    fill: { color: INK_900 }, line: { color: INK_900, width: 0 },
+  });
+  s.addText("\u201C", {
+    x: 0.5, y: 1.2, w: 2.0, h: 2.0,
+    fontFace: "Inter", fontSize: 220, bold: true, color: ELECTRON, valign: "top",
+  });
+  s.addText(slide.title, {
+    x: 1.5, y: 2.7, w: 10.3, h: 2.2,
+    fontFace: "Inter", fontSize: 40, bold: true, color: INK_100, align: "center", valign: "middle",
+  });
+  if (slide.bullets?.[0]) {
+    s.addText(slide.bullets[0], {
+      x: 2.0, y: 5.1, w: 9.3, h: 1.2,
+      fontFace: "Inter", fontSize: 18, color: MUTED, align: "center", valign: "top",
+    });
   }
 }
 

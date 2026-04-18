@@ -45,6 +45,13 @@ interface StudioState {
   setLanguage: (value: "ko" | "en") => void;
   setDeckType: (value: DeckType) => void;
   setModel: (slot: ModelSlot, id: string) => void;
+  applyTemplate: (tpl: {
+    slideCount: number;
+    includeImages: boolean;
+    language: "ko" | "en";
+    deckType: DeckType;
+    overrides: ModelOverrides;
+  }) => void;
   addAttachment: (att: AttachmentEntry) => void;
   removeAttachment: (id: string) => void;
 
@@ -92,6 +99,15 @@ export const useStudioStore = create<StudioState>((set) => ({
   addAttachment: (att) => set((s) => ({ attachments: [...s.attachments, att] })),
   removeAttachment: (id) =>
     set((s) => ({ attachments: s.attachments.filter((a) => a.id !== id) })),
+
+  applyTemplate: (tpl) =>
+    set({
+      slideCount: tpl.slideCount,
+      includeImages: tpl.includeImages,
+      language: tpl.language,
+      deckType: tpl.deckType,
+      overrides: { ...tpl.overrides },
+    }),
 
   beginJob: () =>
     set({

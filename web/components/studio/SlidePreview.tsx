@@ -385,10 +385,86 @@ function SlideCanvas({
     );
   }
 
-  // Content (default): text on the left, diagram/image on the right.
+  const variant = slide.layoutVariant ?? "split-right";
+  const hasVisual = Boolean(slide.diagram || slide.imageUrl);
+
+  // Quote: centered punchline, no image.
+  if (variant === "quote") {
+    return (
+      <div className={cn("relative flex aspect-video w-full flex-col items-center justify-center bg-ink-900 text-center", padding)}>
+        <span className={cn("font-display leading-none text-electron/80", scale === "zoom" ? "text-[180px]" : "text-[80px]")}>“</span>
+        <h3 className={cn("mt-2 max-w-[80%] font-display font-bold tracking-tight text-foreground", titleSize)}>
+          {slide.title}
+        </h3>
+        {slide.bullets?.[0] && (
+          <p className={cn("mt-4 max-w-[70%] text-foreground/70", scale === "zoom" ? "text-xl" : "text-sm")}>
+            {slide.bullets[0]}
+          </p>
+        )}
+      </div>
+    );
+  }
+
+  // Hero: full-bleed image with overlay text.
+  if (variant === "hero" && hasVisual) {
+    return (
+      <div className={cn("relative aspect-video w-full overflow-hidden bg-ink-900")}>
+        {slide.imageUrl && (
+          <img src={slide.imageUrl} alt={slide.imagePrompt ?? slide.title} className="absolute inset-0 h-full w-full object-cover" />
+        )}
+        <div className="absolute inset-0 bg-gradient-to-b from-ink-950/20 via-ink-950/60 to-ink-950/95" />
+        <div className={cn("relative flex h-full flex-col justify-end", padding)}>
+          <h3 className={cn("font-display font-bold tracking-tight text-foreground", titleSize)}>
+            {slide.title}
+          </h3>
+          <div className={cn("mt-2 rounded-full bg-electron", accentHeight, accentWidth)} />
+          <ul className={cn("mt-3 max-w-[70%] space-y-1 text-foreground/85", bulletSize)}>
+            {slide.bullets?.slice(0, 3).map((b, i) => (
+              <li key={i} className="flex gap-2">
+                <span className="mt-[0.35em] h-1 w-1 shrink-0 rounded-full bg-aurora" />
+                <span className="min-w-0 flex-1">{b}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      </div>
+    );
+  }
+
+  // Stacked: text on top, wide image below.
+  if (variant === "stacked") {
+    return (
+      <div className={cn("relative flex aspect-video w-full flex-col bg-ink-900", padding)}>
+        <h3 className={cn("font-display font-semibold tracking-tight text-foreground", titleSize)}>
+          {slide.title}
+        </h3>
+        <div className={cn("mt-2 rounded-full bg-electron", accentHeight, accentWidth)} />
+        <ul className={cn("mt-3 space-y-1 text-foreground/85", bulletSize)}>
+          {slide.bullets?.slice(0, 4).map((b, i) => (
+            <li key={i} className="flex gap-2">
+              <span className="mt-[0.35em] h-1 w-1 shrink-0 rounded-full bg-aurora" />
+              <span className="min-w-0 flex-1">{b}</span>
+            </li>
+          ))}
+        </ul>
+        {hasVisual && (
+          <div className="relative mt-auto h-[40%] w-full overflow-hidden rounded-xl border border-border/40">
+            {slide.diagram ? (
+              <DiagramRenderer code={slide.diagram} />
+            ) : slide.imageUrl ? (
+              <img src={slide.imageUrl} alt={slide.imagePrompt ?? slide.title} className="absolute inset-0 h-full w-full object-cover" />
+            ) : null}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // Split-left / split-right (default): image on one side, text on the other.
+  const imageOnLeft = variant === "split-left";
   return (
     <div className={cn("relative aspect-video w-full bg-ink-900", padding)}>
-      <div className="relative flex h-full gap-5">
+      <div className={cn("relative flex h-full gap-5", imageOnLeft && "flex-row-reverse")}>
         <div className="flex min-w-0 flex-1 flex-col">
           <h3 className={cn("font-display font-semibold tracking-tight text-foreground", titleSize)}>
             {slide.title}
@@ -403,7 +479,7 @@ function SlideCanvas({
             ))}
           </ul>
         </div>
-        {(slide.diagram || slide.imageUrl) && (
+        {hasVisual && (
           <div className="relative hidden aspect-square w-[42%] shrink-0 overflow-hidden rounded-xl border border-border/40 md:block">
             {slide.diagram ? (
               <DiagramRenderer code={slide.diagram} />

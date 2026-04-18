@@ -17,6 +17,7 @@ import { toast } from "sonner";
 
 import { MotionButton } from "@/components/common/MotionButton";
 import { ModelSelector } from "@/components/studio/ModelSelector";
+import { TemplateManager } from "@/components/studio/TemplateManager";
 import { useStudioStore } from "@/lib/store";
 import type { AttachmentEntry } from "@/lib/store";
 import { fileToAttachment, generateDeck } from "@/lib/api";
@@ -370,6 +371,8 @@ export function PromptEditor() {
           ))}
         </div>
       </div>
+
+      <TemplateManager />
 
       <ModelSelector />
 

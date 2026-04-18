@@ -41,7 +41,7 @@ export const MODEL_SLOT_HINT: Record<ModelSlot, string> = {
 
 /** Default model for each slot - Imagen is the global default per product decision. */
 export const DEFAULT_MODELS: Record<ModelSlot, string> = {
-  t2i_model: "google/imagen-3.0-generate-002",
+  t2i_model: "google/imagen-4.0-generate-001",
   research_agent: "google/gemini-2.5-flash",
   long_context_model: "google/gemini-2.5-flash",
   vision_model: "google/gemini-2.0-flash-vision",
@@ -50,19 +50,26 @@ export const DEFAULT_MODELS: Record<ModelSlot, string> = {
 
 export const GOOGLE_MODELS: ModelOption[] = [
   {
-    id: "google/imagen-3.0-generate-002",
-    label: "Imagen 3.0 (Standard)",
+    id: "google/imagen-4.0-generate-001",
+    label: "Imagen 4 (Standard)",
     kind: "image",
     family: "google",
     defaultFor: ["t2i_model"],
     notes: "기본값. 16:9 커버와 인포그래픽에 최적.",
   },
   {
-    id: "google/imagen-3.0-fast-generate-001",
-    label: "Imagen 3.0 Fast",
+    id: "google/imagen-4.0-fast-generate-001",
+    label: "Imagen 4 Fast",
     kind: "image",
     family: "google",
     notes: "초안·프리뷰 전용 고속 모델.",
+  },
+  {
+    id: "google/imagen-4.0-ultra-generate-001",
+    label: "Imagen 4 Ultra",
+    kind: "image",
+    family: "google",
+    notes: "최고 품질(1장만 생성). 표지·키 비주얼용.",
   },
   {
     id: "google/gemini-2.0-flash",

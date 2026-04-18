@@ -45,6 +45,9 @@ export interface GenerateRequest {
   attachments?: AttachmentPayload[];
 }
 
+export type ImageStyle = "photo" | "illustration" | "diagram" | "abstract";
+export type LayoutVariant = "hero" | "split-right" | "split-left" | "stacked" | "quote";
+
 export interface SlideData {
   index: number;
   kind: SlideKind;
@@ -54,6 +57,10 @@ export interface SlideData {
   imagePrompt?: string;
   /** Data URL ready for <img src=...> when present. */
   imageUrl?: string;
+  /** Art-direction hint from the outline model. */
+  imageStyle?: ImageStyle;
+  /** Composition variant used by both the web preview and the PPTX renderer. */
+  layoutVariant?: LayoutVariant;
   /** Mermaid source for a flowchart / sequence diagram. */
   diagram?: string;
   /** Citations attached to this slide. */
@@ -96,7 +103,7 @@ export async function generateDeck(req: GenerateRequest): Promise<GenerateResult
     (req.models?.research_agent ?? req.models?.design_agent ?? "google/gemini-2.5-flash")
       .replace(/^google\//, "");
   const imageModel =
-    (req.models?.t2i_model ?? "google/imagen-3.0-generate-002").replace(/^google\//, "");
+    (req.models?.t2i_model ?? "google/imagen-4.0-generate-001").replace(/^google\//, "");
 
   const res = await fetch(url, {
     method: "POST",
@@ -141,6 +148,8 @@ export async function generateDeck(req: GenerateRequest): Promise<GenerateResult
       notes?: string;
       imagePrompt?: string;
       imageB64?: string | null;
+      imageStyle?: ImageStyle;
+      layoutVariant?: LayoutVariant;
       diagram?: string;
       sources?: Array<{ label: string; url?: string }>;
     }>;
@@ -164,6 +173,8 @@ export async function generateDeck(req: GenerateRequest): Promise<GenerateResult
       notes: s.notes,
       imagePrompt: s.imagePrompt,
       imageUrl: url,
+      imageStyle: s.imageStyle,
+      layoutVariant: s.layoutVariant,
       diagram: s.diagram,
       sources: s.sources?.filter((src) => src?.label),
     };
