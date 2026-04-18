@@ -69,6 +69,10 @@ export function SlidePreview() {
   const [zoomOpen, setZoomOpen] = useState(false);
   const [downloading, setDownloading] = useState(false);
   const [fullscreenOpen, setFullscreenOpen] = useState(false);
+  // When the user clicks "편집" inside fullscreen we close fullscreen,
+  // open the edit modal, and remember to re-enter fullscreen on modal
+  // close (apply or cancel) so the presentation flow isn't broken.
+  const [resumeFullscreen, setResumeFullscreen] = useState(false);
 
   const current: SlideData | null = slides[active] ?? slides[0] ?? null;
 
@@ -85,6 +89,36 @@ export function SlidePreview() {
       }
     } catch {
       /* fullscreen API rejected — the CSS overlay still renders */
+    }
+  }
+
+  /** Called from FullscreenDeck's header: suspend fullscreen, open edit. */
+  async function startEditFromFullscreen() {
+    setResumeFullscreen(true);
+    setFullscreenOpen(false);
+    try {
+      if (document.fullscreenElement) await document.exitFullscreen?.();
+    } catch {
+      /* ignore */
+    }
+    // Small delay so the fullscreen overlay is fully unmounted before the
+    // modal opens (avoids z-index flash).
+    requestAnimationFrame(() => setZoomOpen(true));
+  }
+
+  /** Called from ZoomModal onClose: if we came from fullscreen, re-enter. */
+  async function closeZoomMaybeResume() {
+    setZoomOpen(false);
+    if (resumeFullscreen) {
+      setResumeFullscreen(false);
+      requestAnimationFrame(async () => {
+        setFullscreenOpen(true);
+        try {
+          if (!document.fullscreenElement) await document.documentElement.requestFullscreen?.();
+        } catch {
+          /* ignore */
+        }
+      });
     }
   }
 
@@ -216,7 +250,7 @@ export function SlidePreview() {
           <ZoomModal
             slide={current}
             slideIndex={active}
-            onClose={() => setZoomOpen(false)}
+            onClose={closeZoomMaybeResume}
           />
         )}
       </AnimatePresence>
@@ -226,6 +260,7 @@ export function SlidePreview() {
             slides={slides}
             active={active}
             onSelect={setActive}
+            onRequestEdit={startEditFromFullscreen}
             onClose={async () => {
               setFullscreenOpen(false);
               try {
@@ -905,11 +940,15 @@ function FullscreenDeck({
   active,
   onSelect,
   onClose,
+  onRequestEdit,
 }: {
   slides: SlideData[];
   active: number;
   onSelect: (i: number) => void;
   onClose: () => void;
+  /** Suspend fullscreen and hand the current slide off to the edit modal.
+   *  The parent is expected to re-open fullscreen when the modal closes. */
+  onRequestEdit?: () => void;
 }) {
   // Lock body scroll + handle keyboard nav while fullscreen is open.
   useEffect(() => {
@@ -958,6 +997,16 @@ function FullscreenDeck({
           <span className="max-w-[50vw] truncate font-medium text-foreground">{slide.title}</span>
         </div>
         <div className="flex items-center gap-2">
+          {onRequestEdit && (
+            <button
+              type="button"
+              onClick={onRequestEdit}
+              className="focus-ring inline-flex items-center gap-1.5 rounded-lg border border-electron/50 bg-electron/10 px-3 py-1 font-medium text-electron transition hover:bg-electron/20"
+              title="편집 모드로 전환 · 저장 시 이 슬라이드로 돌아옵니다"
+            >
+              ✎ 편집
+            </button>
+          )}
           <button
             type="button"
             onClick={() => onSelect(Math.max(0, active - 1))}
