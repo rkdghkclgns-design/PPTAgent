@@ -392,63 +392,123 @@ function SlideCanvas({
     );
   }
 
-  // Objectives: checklist layout with mint accents.
+  // Aggregate gallery — primary + extras — used by every kind that can
+  // display imagery. Falls back to the legacy single imageUrl when images[]
+  // is empty.
+  const gallery: string[] = (() => {
+    if (slide.images && slide.images.length > 0) return slide.images;
+    if (slide.imageUrl) return [slide.imageUrl];
+    return [];
+  })();
+  const primaryImage = gallery[0];
+  const extraImages = gallery.slice(1);
+
+  // Objectives: 2-column layout — numbered checklist on the left, hero
+  // image on the right. Extra images stack as thumbnails underneath so the
+  // user's entire gallery is visible on the slide.
   if (slide.kind === "objectives") {
     return (
-      <div className={cn("relative aspect-video w-full bg-ink-900", padding)}>
-        <p className="text-[10px] uppercase tracking-[0.3em] text-aurora">학습 목표</p>
-        <h3 className={cn("mt-1 font-display font-semibold tracking-tight text-foreground", titleSize)}>
-          {slide.title}
-        </h3>
-        <div className={cn("mt-3 rounded-full bg-aurora", accentHeight, accentWidth)} />
-        <ul className={cn("mt-6 space-y-3", bulletSize)}>
-          {slide.bullets.map((b, i) => (
-            <li key={i} className="flex items-start gap-3 text-foreground/90">
-              <span className="mt-[0.15em] flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-aurora/60 text-[10px] font-bold text-aurora">
-                {i + 1}
-              </span>
-              <span className="flex-1">{b}</span>
-            </li>
-          ))}
-        </ul>
+      <div className={cn("relative grid aspect-video w-full grid-cols-[1.2fr_1fr] gap-6 bg-ink-900", padding)}>
+        <div className="flex min-w-0 flex-col">
+          <p className="text-[10px] uppercase tracking-[0.3em] text-aurora">학습 목표</p>
+          <h3 className={cn("mt-1 font-display font-semibold tracking-tight text-foreground", titleSize)}>
+            {slide.title}
+          </h3>
+          <div className={cn("mt-3 rounded-full bg-aurora", accentHeight, accentWidth)} />
+          <ul className={cn("mt-5 space-y-3", bulletSize)}>
+            {slide.bullets.map((b, i) => (
+              <li key={i} className="flex items-start gap-3 text-foreground/90">
+                <span className="mt-[0.15em] flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-aurora/60 text-[10px] font-bold text-aurora">
+                  {i + 1}
+                </span>
+                <span className="flex-1">{b}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+        {primaryImage ? (
+          <div className="flex min-h-0 flex-col gap-2">
+            <div className="relative flex-1 overflow-hidden rounded-xl border border-border/40">
+              <img src={primaryImage} alt="" className="absolute inset-0 h-full w-full object-cover" />
+            </div>
+            {extraImages.length > 0 && (
+              <div className="grid shrink-0 grid-cols-3 gap-1.5">
+                {extraImages.slice(0, 3).map((src, i) => (
+                  <div key={i} className="relative aspect-video overflow-hidden rounded-md border border-border/40">
+                    <img src={src} alt="" className="absolute inset-0 h-full w-full object-cover" />
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        ) : (
+          <div className="flex items-center justify-center rounded-xl border border-dashed border-border/40 text-center text-[10px] text-muted-foreground">
+            갤러리에 이미지를 추가하면 여기에 표시됩니다.
+          </div>
+        )}
       </div>
     );
   }
 
-  // Summary: sunrise-tinted highlight cards.
+  // Summary: sunrise-tinted highlight cards with optional hero background.
   if (slide.kind === "summary") {
     return (
-      <div className={cn("relative aspect-video w-full bg-ink-900", padding)}>
-        <p className="text-[10px] uppercase tracking-[0.3em] text-sunrise">Summary</p>
-        <h3 className={cn("mt-1 font-display font-semibold tracking-tight text-foreground", titleSize)}>
-          {slide.title}
-        </h3>
-        <div className={cn("mt-3 rounded-full bg-sunrise", accentHeight, accentWidth)} />
-        <div className={cn("mt-5 grid gap-3", scale === "zoom" ? "grid-cols-2" : "grid-cols-1")}>
-          {slide.bullets.map((b, i) => (
-            <div
-              key={i}
-              className="rounded-xl border border-sunrise/30 bg-sunrise/5 p-3 text-foreground/90"
-            >
-              <p className={cn("font-medium", bulletSize)}>{b}</p>
+      <div className={cn("relative aspect-video w-full overflow-hidden bg-ink-900")}>
+        {primaryImage && (
+          <>
+            <img src={primaryImage} alt="" className="absolute inset-0 h-full w-full object-cover opacity-30" />
+            <div className="absolute inset-0 bg-gradient-to-br from-ink-950/85 via-ink-900/70 to-ink-950/95" />
+          </>
+        )}
+        <div className={cn("relative h-full", padding)}>
+          <p className="text-[10px] uppercase tracking-[0.3em] text-sunrise">Summary</p>
+          <h3 className={cn("mt-1 font-display font-semibold tracking-tight text-foreground", titleSize)}>
+            {slide.title}
+          </h3>
+          <div className={cn("mt-3 rounded-full bg-sunrise", accentHeight, accentWidth)} />
+          <div className={cn("mt-5 grid gap-3", scale === "zoom" ? "grid-cols-2" : "grid-cols-1")}>
+            {slide.bullets.map((b, i) => (
+              <div
+                key={i}
+                className="rounded-xl border border-sunrise/30 bg-sunrise/5 p-3 text-foreground/90 backdrop-blur-sm"
+              >
+                <p className={cn("font-medium", bulletSize)}>{b}</p>
+              </div>
+            ))}
+          </div>
+          {extraImages.length > 0 && (
+            <div className="absolute bottom-4 right-4 flex gap-1.5">
+              {extraImages.slice(0, 3).map((src, i) => (
+                <div key={i} className="relative h-12 w-16 overflow-hidden rounded-md border border-border/40 shadow-lg">
+                  <img src={src} alt="" className="absolute inset-0 h-full w-full object-cover" />
+                </div>
+              ))}
             </div>
-          ))}
+          )}
         </div>
       </div>
     );
   }
 
-  // Q&A: minimal layout
+  // Q&A: minimal centered layout with optional background image.
   if (slide.kind === "qna") {
     return (
-      <div className={cn("relative flex aspect-video w-full flex-col items-center justify-center gap-4 bg-ink-900 text-center", padding)}>
-        <MessageCircle className={cn("text-electron", scale === "zoom" ? "h-14 w-14" : "h-7 w-7")} />
-        <h3 className={cn("font-display font-bold tracking-tight text-foreground", titleSize)}>
-          {slide.title}
-        </h3>
-        {slide.bullets?.[0] && (
-          <p className="max-w-[80%] text-muted-foreground">{slide.bullets[0]}</p>
+      <div className={cn("relative flex aspect-video w-full flex-col items-center justify-center gap-4 overflow-hidden bg-ink-900 text-center", padding)}>
+        {primaryImage && (
+          <>
+            <img src={primaryImage} alt="" className="absolute inset-0 h-full w-full object-cover opacity-25" />
+            <div className="absolute inset-0 bg-gradient-to-b from-ink-950/60 via-ink-950/80 to-ink-950" />
+          </>
         )}
+        <div className="relative flex flex-col items-center gap-4">
+          <MessageCircle className={cn("text-electron", scale === "zoom" ? "h-14 w-14" : "h-7 w-7")} />
+          <h3 className={cn("font-display font-bold tracking-tight text-foreground", titleSize)}>
+            {slide.title}
+          </h3>
+          {slide.bullets?.[0] && (
+            <p className="max-w-[80%] text-muted-foreground">{slide.bullets[0]}</p>
+          )}
+        </div>
       </div>
     );
   }
@@ -548,16 +608,27 @@ function SlideCanvas({
           </ul>
         </div>
         {hasVisual && (
-          <div className="relative hidden aspect-square w-[42%] shrink-0 overflow-hidden rounded-xl border border-border/40 md:block">
-            {slide.diagram ? (
-              <DiagramRenderer code={slide.diagram} />
-            ) : slide.imageUrl ? (
-              <img
-                src={slide.imageUrl}
-                alt={slide.imagePrompt ?? slide.title}
-                className="absolute inset-0 h-full w-full object-cover"
-              />
-            ) : null}
+          <div className="hidden w-[42%] shrink-0 flex-col gap-1.5 md:flex">
+            <div className="relative flex-1 overflow-hidden rounded-xl border border-border/40">
+              {slide.diagram ? (
+                <DiagramRenderer code={slide.diagram} />
+              ) : primaryImage ? (
+                <img
+                  src={primaryImage}
+                  alt={slide.imagePrompt ?? slide.title}
+                  className="absolute inset-0 h-full w-full object-cover"
+                />
+              ) : null}
+            </div>
+            {extraImages.length > 0 && (
+              <div className="grid shrink-0 grid-cols-3 gap-1">
+                {extraImages.slice(0, 3).map((src, i) => (
+                  <div key={i} className="relative aspect-video overflow-hidden rounded-md border border-border/40">
+                    <img src={src} alt="" className="absolute inset-0 h-full w-full object-cover" />
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         )}
       </div>

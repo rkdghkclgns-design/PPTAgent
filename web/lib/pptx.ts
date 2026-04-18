@@ -145,13 +145,16 @@ function renderCover(s: any, slide: SlideData) {
 }
 
 function renderObjectives(s: any, slide: SlideData) {
+  const gallery = galleryOf(slide);
+  const hasImage = gallery.length > 0;
+  const textW = hasImage ? 6.8 : 12.3;
   s.addText("학습 목표 · OBJECTIVES", {
-    x: 0.5, y: 0.45, w: 12.3, h: 0.5,
+    x: 0.5, y: 0.45, w: textW, h: 0.5,
     fontFace: "Inter", fontSize: 14, color: AURORA, charSpacing: 4,
   });
   s.addText(slide.title, {
-    x: 0.5, y: 0.95, w: 12.3, h: 1.1,
-    fontFace: "Inter", fontSize: 34, bold: true, color: INK_100, valign: "middle",
+    x: 0.5, y: 0.95, w: textW, h: 1.1,
+    fontFace: "Inter", fontSize: 30, bold: true, color: INK_100, valign: "middle",
   });
   s.addShape("rect", {
     x: 0.5, y: 2.05, w: 1.2, h: 0.1,
@@ -170,16 +173,47 @@ function renderObjectives(s: any, slide: SlideData) {
       fontFace: "Inter", fontSize: 16, bold: true, color: AURORA, align: "center", valign: "middle",
     });
     s.addText(bullet, {
-      x: 1.2, y: y - 0.05, w: 11, h: 0.6,
-      fontFace: "Inter", fontSize: 18, color: INK_100, valign: "middle",
+      x: 1.2, y: y - 0.05, w: textW - 0.8, h: 0.6,
+      fontFace: "Inter", fontSize: 16, color: INK_100, valign: "middle",
     });
   });
+
+  if (hasImage) {
+    const primary = gallery[0];
+    const extras = gallery.slice(1, 4);
+    const heroH = extras.length > 0 ? 4.0 : 5.6;
+    s.addImage({
+      data: primary,
+      x: 7.5, y: 1.0, w: 5.3, h: heroH,
+      sizing: { type: "cover", w: 5.3, h: heroH },
+    });
+    if (extras.length > 0) {
+      const thumbW = 5.3 / extras.length - 0.1;
+      extras.forEach((src, i) => {
+        s.addImage({
+          data: src,
+          x: 7.5 + i * (thumbW + 0.1), y: 1.0 + heroH + 0.15,
+          w: thumbW, h: 1.3,
+          sizing: { type: "cover", w: thumbW, h: 1.3 },
+        });
+      });
+    }
+  }
+}
+
+function galleryOf(slide: SlideData): string[] {
+  if (slide.images && slide.images.length > 0) return slide.images;
+  if (slide.imageUrl) return [slide.imageUrl];
+  return [];
 }
 
 function renderContent(s: any, slide: SlideData, diagramPng?: string) {
   const variant = slide.layoutVariant ?? "split-right";
-  const visualSrc = diagramPng ?? slide.imageUrl;
+  const gallery = galleryOf(slide);
+  const primary = gallery[0];
+  const visualSrc = diagramPng ?? primary;
   const caption = diagramPng ? "Diagram · Mermaid" : slide.imagePrompt?.slice(0, 120);
+  const extras = gallery.slice(1, 4);
 
   // Title + accent rule placement depends on whether the image is full-bleed.
   if (variant === "hero" && visualSrc) {
@@ -191,14 +225,14 @@ function renderContent(s: any, slide: SlideData, diagramPng?: string) {
     return;
   }
   if (variant === "stacked") {
-    renderStackedContent(s, slide, visualSrc, caption);
+    renderStackedContent(s, slide, visualSrc, caption, extras);
     return;
   }
   // split-left and split-right
-  renderSplitContent(s, slide, variant === "split-left", visualSrc, caption);
+  renderSplitContent(s, slide, variant === "split-left", visualSrc, caption, extras);
 }
 
-function renderSplitContent(s: any, slide: SlideData, imageLeft: boolean, visualSrc: string | undefined, caption?: string) {
+function renderSplitContent(s: any, slide: SlideData, imageLeft: boolean, visualSrc: string | undefined, caption: string | undefined, extras: string[]) {
   const hasVisual = Boolean(visualSrc);
   const textX = hasVisual && imageLeft ? 7.4 : 0.5;
   const textW = hasVisual ? 5.4 : 12.3;
@@ -219,12 +253,24 @@ function renderSplitContent(s: any, slide: SlideData, imageLeft: boolean, visual
     );
   }
   if (hasVisual && visualSrc) {
+    const heroH = extras.length > 0 ? 4.0 : 5.4;
     s.addImage({
       data: visualSrc,
-      x: imageX, y: 0.9, w: 5.4, h: 5.4,
-      sizing: { type: "cover", w: 5.4, h: 5.4 },
+      x: imageX, y: 0.9, w: 5.4, h: heroH,
+      sizing: { type: "cover", w: 5.4, h: heroH },
     });
-    if (caption) {
+    if (extras.length > 0) {
+      const thumbW = 5.4 / extras.length - 0.1;
+      extras.forEach((src, i) => {
+        s.addImage({
+          data: src,
+          x: imageX + i * (thumbW + 0.1),
+          y: 0.9 + heroH + 0.15,
+          w: thumbW, h: 1.15,
+          sizing: { type: "cover", w: thumbW, h: 1.15 },
+        });
+      });
+    } else if (caption) {
       s.addText(caption, {
         x: imageX, y: 6.35, w: 5.4, h: 0.4,
         fontFace: "Inter", fontSize: 9, color: MUTED, italic: true, valign: "top",
@@ -259,7 +305,7 @@ function renderHeroContent(s: any, slide: SlideData, visualSrc: string, caption?
   }
 }
 
-function renderStackedContent(s: any, slide: SlideData, visualSrc?: string, caption?: string) {
+function renderStackedContent(s: any, slide: SlideData, visualSrc: string | undefined, caption: string | undefined, extras: string[] = []) {
   s.addText(slide.title, {
     x: 0.5, y: 0.45, w: 12.3, h: 1.0,
     fontFace: "Inter", fontSize: 28, bold: true, color: INK_100, valign: "middle",
@@ -275,8 +321,23 @@ function renderStackedContent(s: any, slide: SlideData, visualSrc?: string, capt
     );
   }
   if (visualSrc) {
-    s.addImage({ data: visualSrc, x: 0.5, y: 4.1, w: 12.3, h: 2.6, sizing: { type: "cover", w: 12.3, h: 2.6 } });
-    if (caption) {
+    if (extras.length > 0) {
+      // Share the bottom half between the primary and extras.
+      const primaryW = 12.3 - extras.length * 1.9 - extras.length * 0.1;
+      s.addImage({ data: visualSrc, x: 0.5, y: 4.1, w: primaryW, h: 2.6, sizing: { type: "cover", w: primaryW, h: 2.6 } });
+      extras.forEach((src, i) => {
+        s.addImage({
+          data: src,
+          x: 0.5 + primaryW + 0.1 + i * (1.9 + 0.1),
+          y: 4.1,
+          w: 1.9, h: 2.6,
+          sizing: { type: "cover", w: 1.9, h: 2.6 },
+        });
+      });
+    } else {
+      s.addImage({ data: visualSrc, x: 0.5, y: 4.1, w: 12.3, h: 2.6, sizing: { type: "cover", w: 12.3, h: 2.6 } });
+    }
+    if (caption && extras.length === 0) {
       s.addText(caption, {
         x: 0.5, y: 6.75, w: 12.3, h: 0.3,
         fontFace: "Inter", fontSize: 9, color: MUTED, italic: true, valign: "top",
@@ -307,6 +368,21 @@ function renderQuoteContent(s: any, slide: SlideData) {
 }
 
 function renderSummary(s: any, slide: SlideData) {
+  const gallery = galleryOf(slide);
+  // Full-bleed primary as background with a scrim for readability.
+  if (gallery.length > 0) {
+    s.addImage({
+      data: gallery[0],
+      x: 0, y: 0, w: 13.333, h: 7.5,
+      sizing: { type: "cover", w: 13.333, h: 7.5 },
+      transparency: 55,
+    });
+    s.addShape("rect", {
+      x: 0, y: 0, w: 13.333, h: 7.5,
+      fill: { color: INK_950, transparency: 30 },
+      line: { color: INK_950, width: 0 },
+    });
+  }
   s.addText("SUMMARY", {
     x: 0.5, y: 0.45, w: 12.3, h: 0.5,
     fontFace: "Inter", fontSize: 14, color: SUNRISE, charSpacing: 4,
@@ -329,7 +405,7 @@ function renderSummary(s: any, slide: SlideData) {
     const y = 2.5 + row * rowH;
     s.addShape("roundRect", {
       x, y, w, h: rowH - 0.2,
-      fill: { color: SUNRISE, transparency: 88 },
+      fill: { color: INK_900, transparency: 40 },
       line: { color: SUNRISE, width: 1 },
       rectRadius: 0.1,
     });
@@ -338,9 +414,37 @@ function renderSummary(s: any, slide: SlideData) {
       fontFace: "Inter", fontSize: 15, color: INK_100, valign: "middle",
     });
   });
+  // Extras as a small inset strip in the bottom-right.
+  const extras = gallery.slice(1, 4);
+  if (extras.length > 0) {
+    const thumbW = 1.4;
+    extras.forEach((src, i) => {
+      s.addImage({
+        data: src,
+        x: 13.333 - 0.4 - (extras.length - i) * (thumbW + 0.1),
+        y: 6.55,
+        w: thumbW, h: 0.85,
+        sizing: { type: "cover", w: thumbW, h: 0.85 },
+      });
+    });
+  }
 }
 
 function renderQnA(s: any, slide: SlideData) {
+  const gallery = galleryOf(slide);
+  if (gallery.length > 0) {
+    s.addImage({
+      data: gallery[0],
+      x: 0, y: 0, w: 13.333, h: 7.5,
+      sizing: { type: "cover", w: 13.333, h: 7.5 },
+      transparency: 65,
+    });
+    s.addShape("rect", {
+      x: 0, y: 0, w: 13.333, h: 7.5,
+      fill: { color: INK_950, transparency: 20 },
+      line: { color: INK_950, width: 0 },
+    });
+  }
   s.addShape("ellipse", {
     x: 5.7, y: 1.5, w: 1.9, h: 1.9,
     fill: { color: ELECTRON, transparency: 70 },
