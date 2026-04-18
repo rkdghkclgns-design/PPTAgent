@@ -59,21 +59,36 @@ export async function downloadPptx(slides: SlideData[], prompt: string): Promise
     s.background = { color: INK_950 };
     const diagramPng = diagrams.get(slide.index);
 
+    // If the user set a custom primary-image layout, render the slide with
+    // the default image slot suppressed and overlay the image at the
+    // user-specified rectangle.
+    const override = slide.imageLayouts?.[0];
+    const slideForKind: SlideData = override ? { ...slide, imageUrl: undefined, images: slide.images?.slice(1) } : slide;
     switch (slide.kind) {
       case "cover":
-        renderCover(s, slide);
+        renderCover(s, slideForKind);
         break;
       case "objectives":
-        renderObjectives(s, slide);
+        renderObjectives(s, slideForKind);
         break;
       case "summary":
-        renderSummary(s, slide);
+        renderSummary(s, slideForKind);
         break;
       case "qna":
-        renderQnA(s, slide);
+        renderQnA(s, slideForKind);
         break;
       default:
-        renderContent(s, slide, diagramPng);
+        renderContent(s, slideForKind, diagramPng);
+    }
+    if (override && slide.imageUrl) {
+      s.addImage({
+        data: slide.imageUrl,
+        x: override.x * 13.333,
+        y: override.y * 7.5,
+        w: override.w * 13.333,
+        h: override.h * 7.5,
+        sizing: { type: "cover", w: override.w * 13.333, h: override.h * 7.5 },
+      });
     }
 
     if (slide.notes) s.addNotes(slide.notes);

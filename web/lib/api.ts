@@ -48,6 +48,18 @@ export interface GenerateRequest {
 export type ImageStyle = "photo" | "illustration" | "diagram" | "abstract";
 export type LayoutVariant = "hero" | "split-right" | "split-left" | "stacked" | "quote";
 
+/**
+ * User-overridable image placement within a slide. All values are fractions
+ * of the slide (16:9), so {x:0.5, y:0.1, w:0.45, h:0.8} = image occupies
+ * the right half, 10%-inset from top and bottom.
+ */
+export interface ImageLayout {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
 export interface SlideData {
   index: number;
   kind: SlideKind;
@@ -65,6 +77,11 @@ export interface SlideData {
    * primary (cover) image. Edit modal can add / remove / reorder entries.
    */
   images?: string[];
+  /**
+   * Per-image placement override (position + size as 0-1 fractions of
+   * slide). When omitted or null, the kind's default slot is used.
+   */
+  imageLayouts?: Array<ImageLayout | null>;
   /** Art-direction hint from the outline model. */
   imageStyle?: ImageStyle;
   /** Composition variant used by both the web preview and the PPTX renderer. */
@@ -158,6 +175,7 @@ export async function generateDeck(req: GenerateRequest): Promise<GenerateResult
       imageB64?: string | null;
       imageStyle?: ImageStyle;
       layoutVariant?: LayoutVariant;
+      imageLayouts?: Array<ImageLayout | null>;
       diagram?: string;
       sources?: Array<{ label: string; url?: string }>;
     }>;
@@ -184,6 +202,7 @@ export async function generateDeck(req: GenerateRequest): Promise<GenerateResult
       images: url ? [url] : [],
       imageStyle: s.imageStyle,
       layoutVariant: s.layoutVariant,
+      imageLayouts: s.imageLayouts,
       diagram: s.diagram,
       sources: s.sources?.filter((src) => src?.label),
     };

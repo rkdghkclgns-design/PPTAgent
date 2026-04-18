@@ -27,13 +27,20 @@ import {
 import { toast } from "sonner";
 
 import { MotionButton } from "@/components/common/MotionButton";
+import { DraggableImage } from "@/components/studio/DraggableImage";
 import { useStudioStore } from "@/lib/store";
 import { downloadPptx } from "@/lib/pptx";
 import { renderMermaid, svgToDataUrl } from "@/lib/mermaid";
+import {
+  clampLayout,
+  defaultLayoutForKind,
+  IMAGE_LAYOUT_PRESETS,
+} from "@/lib/imageLayouts";
 import { cn } from "@/lib/utils";
 import {
   imageFileToDataUrl,
   regenerateSlideImage,
+  type ImageLayout,
   type SlideData,
   type SlideKind,
 } from "@/lib/api";
@@ -352,9 +359,13 @@ function MainSlide({
 function SlideCanvas({
   slide,
   scale,
+  hidePrimaryImage,
 }: {
   slide: SlideData;
   scale: "preview" | "zoom";
+  /** When true, the kind's default primary-image slot renders empty so a
+   *  DraggableImage overlay from the parent can take its place cleanly. */
+  hidePrimaryImage?: boolean;
 }) {
   const padding = scale === "zoom" ? "p-12" : "p-6";
   const titleSize =
@@ -369,7 +380,7 @@ function SlideCanvas({
   if (slide.kind === "cover") {
     return (
       <div className={cn("relative aspect-video w-full overflow-hidden bg-ink-900", padding)}>
-        {slide.imageUrl && (
+        {slide.imageUrl && !hidePrimaryImage && (
           <img
             src={slide.imageUrl}
             alt=""
@@ -400,7 +411,7 @@ function SlideCanvas({
     if (slide.imageUrl) return [slide.imageUrl];
     return [];
   })();
-  const primaryImage = gallery[0];
+  const primaryImage = hidePrimaryImage ? undefined : gallery[0];
   const extraImages = gallery.slice(1);
 
   // Objectives: 2-column layout — numbered checklist on the left, hero
@@ -514,7 +525,8 @@ function SlideCanvas({
   }
 
   const variant = slide.layoutVariant ?? "split-right";
-  const hasVisual = Boolean(slide.diagram || slide.imageUrl);
+  const effectiveImageUrl = hidePrimaryImage ? undefined : slide.imageUrl;
+  const hasVisual = Boolean(slide.diagram || effectiveImageUrl);
 
   // Quote: centered punchline, no image.
   if (variant === "quote") {
@@ -537,8 +549,8 @@ function SlideCanvas({
   if (variant === "hero" && hasVisual) {
     return (
       <div className={cn("relative aspect-video w-full overflow-hidden bg-ink-900")}>
-        {slide.imageUrl && (
-          <img src={slide.imageUrl} alt={slide.imagePrompt ?? slide.title} className="absolute inset-0 h-full w-full object-cover" />
+        {effectiveImageUrl && (
+          <img src={effectiveImageUrl} alt={slide.imagePrompt ?? slide.title} className="absolute inset-0 h-full w-full object-cover" />
         )}
         <div className="absolute inset-0 bg-gradient-to-b from-ink-950/20 via-ink-950/60 to-ink-950/95" />
         <div className={cn("relative flex h-full flex-col justify-end", padding)}>
@@ -579,8 +591,8 @@ function SlideCanvas({
           <div className="relative mt-auto h-[40%] w-full overflow-hidden rounded-xl border border-border/40">
             {slide.diagram ? (
               <DiagramRenderer code={slide.diagram} />
-            ) : slide.imageUrl ? (
-              <img src={slide.imageUrl} alt={slide.imagePrompt ?? slide.title} className="absolute inset-0 h-full w-full object-cover" />
+            ) : effectiveImageUrl ? (
+              <img src={effectiveImageUrl} alt={slide.imagePrompt ?? slide.title} className="absolute inset-0 h-full w-full object-cover" />
             ) : null}
           </div>
         )}
@@ -858,6 +870,11 @@ function ZoomModal({
     ? slide.images
     : slide.imageUrl ? [slide.imageUrl] : [];
   const [images, setImages] = useState<string[]>(initialImages);
+  // Per-image layout override (x/y/w/h as 0-1 fractions). null = use kind default.
+  const initialLayout = slide.imageLayouts?.[0] ?? null;
+  const [primaryLayout, setPrimaryLayout] = useState<ImageLayout | null>(initialLayout);
+  const [layoutSelected, setLayoutSelected] = useState(false);
+  const canvasRef = useRef<HTMLDivElement | null>(null);
   const [regenerating, setRegenerating] = useState(false);
   const [saving, setSaving] = useState(false);
   const addFileInputRef = useRef<HTMLInputElement | null>(null);
@@ -867,7 +884,8 @@ function ZoomModal({
     JSON.stringify(bullets) !== JSON.stringify(slide.bullets ?? []) ||
     notes !== (slide.notes ?? "") ||
     imagePrompt !== (slide.imagePrompt ?? "") ||
-    JSON.stringify(images) !== JSON.stringify(initialImages);
+    JSON.stringify(images) !== JSON.stringify(initialImages) ||
+    JSON.stringify(primaryLayout) !== JSON.stringify(initialLayout);
 
   // Lock body scroll while the modal is open so background doesn't jiggle.
   useEffect(() => {
@@ -948,6 +966,10 @@ function ZoomModal({
   function handleApply() {
     setSaving(true);
     const cleanedBullets = bullets.map((b) => b.trim()).filter((b) => b.length > 0);
+    // Keep the imageLayouts array sized with images so indices line up.
+    const nextLayouts: Array<ImageLayout | null> = images.map((_, i) =>
+      i === 0 ? primaryLayout : (slide.imageLayouts?.[i] ?? null),
+    );
     updateSlide(slideIndex, {
       title: title.trim() || slide.title,
       bullets: cleanedBullets,
@@ -955,6 +977,7 @@ function ZoomModal({
       imagePrompt: imagePrompt.trim() ? imagePrompt.trim() : undefined,
       images,
       imageUrl: images[0],
+      imageLayouts: nextLayouts,
     });
     setSaving(false);
     toast.success("슬라이드를 수정했습니다");
@@ -971,6 +994,12 @@ function ZoomModal({
     images,
     imageUrl: images[0],
   };
+
+  // Effective layout for the draggable overlay: explicit override OR the
+  // kind's default slot.
+  const effectiveLayout: ImageLayout = primaryLayout ?? defaultLayoutForKind(slide.kind);
+  const hasPrimaryImage = images.length > 0;
+  const showOverlay = hasPrimaryImage;
 
   if (typeof window === "undefined") return null;
   return createPortal(
@@ -1019,8 +1048,28 @@ function ZoomModal({
         </header>
 
         <div className="grid min-h-0 grid-cols-1 gap-0 overflow-hidden md:grid-cols-[minmax(0,3fr)_minmax(280px,1.4fr)]">
-          <div className="relative overflow-hidden bg-ink-900">
-            <SlideCanvas slide={previewSlide} scale="zoom" />
+          <div
+            ref={canvasRef}
+            className="relative overflow-hidden bg-ink-900"
+            onPointerDown={(e) => {
+              // Deselect the draggable overlay when the user clicks the
+              // empty canvas area (target is this div itself).
+              if (e.target === e.currentTarget) setLayoutSelected(false);
+            }}
+          >
+            <SlideCanvas slide={previewSlide} scale="zoom" hidePrimaryImage={showOverlay} />
+            {showOverlay && (
+              <DraggableImage
+                src={images[0]}
+                layout={effectiveLayout}
+                containerRef={canvasRef}
+                interactive
+                selected={layoutSelected}
+                onSelect={() => setLayoutSelected(true)}
+                onChange={(next) => setPrimaryLayout(next)}
+                alt={slide.imagePrompt ?? slide.title}
+              />
+            )}
           </div>
 
           <div className="flex min-h-0 flex-col overflow-y-auto scrollbar-slim border-l border-border/60 bg-ink-950/60 p-5">
@@ -1085,6 +1134,46 @@ function ZoomModal({
                 className="focus-ring w-full resize-none rounded-xl border border-border/70 bg-muted/40 px-3 py-2 text-xs leading-relaxed"
               />
             </section>
+
+            {hasPrimaryImage && (
+              <section className="mt-5 space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <label className="text-[10px] font-semibold uppercase tracking-[0.22em] text-muted-foreground">
+                    대표 이미지 배치
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPrimaryLayout(null);
+                      setLayoutSelected(false);
+                    }}
+                    disabled={primaryLayout === null}
+                    className="text-[11px] font-medium text-electron hover:text-electron/80 disabled:opacity-40"
+                  >
+                    기본 배치로 되돌리기
+                  </button>
+                </div>
+                <p className="text-[10px] leading-relaxed text-muted-foreground">
+                  왼쪽 프리뷰에서 이미지를 클릭한 뒤 자유롭게 드래그 · 모서리로 크기 조절하거나,
+                  아래 프리셋을 사용하세요.
+                </p>
+                <div className="grid grid-cols-3 gap-1.5">
+                  {IMAGE_LAYOUT_PRESETS.map((preset) => (
+                    <button
+                      key={preset.id}
+                      type="button"
+                      onClick={() => {
+                        setPrimaryLayout(clampLayout(preset.layout));
+                        setLayoutSelected(true);
+                      }}
+                      className="rounded-lg border border-border/60 bg-muted/30 px-2 py-1.5 text-[11px] font-medium text-foreground/80 transition hover:border-electron/40 hover:text-foreground"
+                    >
+                      {preset.label}
+                    </button>
+                  ))}
+                </div>
+              </section>
+            )}
 
             <section className="mt-5 space-y-2.5">
               <label className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.22em] text-muted-foreground">
