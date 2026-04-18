@@ -192,6 +192,58 @@ export async function generateDeck(req: GenerateRequest): Promise<GenerateResult
 }
 
 // ---------------------------------------------------------------------------
+// Single-slide image regeneration via the /regenerate-image edge function.
+// ---------------------------------------------------------------------------
+
+export interface RegenerateImageInput {
+  title: string;
+  bullets: string[];
+  imagePrompt?: string;
+  imageStyle?: ImageStyle;
+  kind: SlideKind;
+}
+
+/** Calls the edge function and returns a data URL ready for <img src=...>. */
+export async function regenerateSlideImage(input: RegenerateImageInput): Promise<string> {
+  if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+    throw new Error("Supabase is not configured");
+  }
+  const url = `${SUPABASE_URL.replace(/\/$/, "")}/functions/v1/regenerate-image`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      apikey: SUPABASE_ANON_KEY,
+      authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+    },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) {
+    const body = (await res.text()).slice(0, 300);
+    throw new Error(`이미지 재생성 실패: ${res.status} ${body}`);
+  }
+  const data = (await res.json()) as { b64?: string; error?: string };
+  if (!data.b64) throw new Error(data.error ?? "이미지 재생성 실패");
+  return `data:image/png;base64,${data.b64}`;
+}
+
+/** Read an uploaded image File and return a PNG/JPEG data URL. */
+export async function imageFileToDataUrl(file: File): Promise<string> {
+  if (!file.type.startsWith("image/")) {
+    throw new Error("이미지 파일만 업로드할 수 있습니다");
+  }
+  if (file.size > 8 * 1024 * 1024) {
+    throw new Error("이미지가 8MB 를 초과합니다");
+  }
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result ?? ""));
+    reader.onerror = () => reject(new Error("이미지를 읽지 못했습니다"));
+    reader.readAsDataURL(file);
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Attachment loader - reads a File into the AttachmentPayload shape the Edge
 // Function expects (text excerpt or base64 image).
 // ---------------------------------------------------------------------------

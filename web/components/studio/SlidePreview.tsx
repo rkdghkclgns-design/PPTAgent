@@ -1,18 +1,21 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   Download,
   Expand,
   ImageOff,
+  ImageUp,
   Link2,
   Loader2,
   Maximize2,
   MessageCircle,
   Radio,
+  RefreshCcw,
   Sparkles,
   Target,
+  Upload,
   X,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -22,7 +25,12 @@ import { useStudioStore } from "@/lib/store";
 import { downloadPptx } from "@/lib/pptx";
 import { renderMermaid, svgToDataUrl } from "@/lib/mermaid";
 import { cn } from "@/lib/utils";
-import type { SlideData, SlideKind } from "@/lib/api";
+import {
+  imageFileToDataUrl,
+  regenerateSlideImage,
+  type SlideData,
+  type SlideKind,
+} from "@/lib/api";
 
 const KIND_STYLE: Record<SlideKind, { label: string; icon: React.ComponentType<any>; tint: string }> = {
   cover: { label: "표지", icon: Sparkles, tint: "text-electron" },
@@ -63,8 +71,8 @@ export function SlidePreview() {
   }
 
   return (
-    <aside className="flex h-full w-[520px] shrink-0 flex-col border-l border-border/60 bg-card/40 backdrop-blur-xl">
-      <header className="flex items-center justify-between border-b border-border/60 px-5 py-3">
+    <aside className="flex h-full min-h-0 w-[520px] shrink-0 flex-col border-l border-border/60 bg-card/40 backdrop-blur-xl">
+      <header className="flex shrink-0 items-center justify-between border-b border-border/60 px-5 py-3">
         <div className="flex items-center gap-2">
           <Maximize2 className="h-4 w-4 text-electron" />
           <p className="text-sm font-semibold">실시간 프리뷰</p>
@@ -86,7 +94,7 @@ export function SlidePreview() {
         </MotionButton>
       </header>
 
-      <div className="flex flex-1 flex-col gap-4 overflow-y-auto scrollbar-slim p-5">
+      <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto scrollbar-slim p-5">
         {provider === "sample" && (
           <motion.div
             initial={{ opacity: 0, y: -4 }}
@@ -133,9 +141,19 @@ export function SlidePreview() {
         />
 
         {current && (
-          <div className="flex items-center justify-between text-xs text-muted-foreground">
+          <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
             <span>슬라이드 {active + 1} / {slides.length}</span>
-            <KindBadge kind={current.kind} />
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setZoomOpen(true)}
+                className="focus-ring inline-flex items-center gap-1.5 rounded-full border border-border/60 bg-muted/40 px-2.5 py-1 font-medium text-foreground/80 transition hover:border-electron/50 hover:text-foreground"
+                title="확대 · 편집"
+              >
+                <Expand className="h-3 w-3" /> 확대 · 편집
+              </button>
+              <KindBadge kind={current.kind} />
+            </div>
           </div>
         )}
 
@@ -157,7 +175,11 @@ export function SlidePreview() {
 
       <AnimatePresence>
         {zoomOpen && current && (
-          <ZoomModal slide={current} onClose={() => setZoomOpen(false)} />
+          <ZoomModal
+            slide={current}
+            slideIndex={active}
+            onClose={() => setZoomOpen(false)}
+          />
         )}
       </AnimatePresence>
     </aside>
@@ -575,20 +597,120 @@ function ThumbnailStrip({
 
 function ZoomModal({
   slide,
+  slideIndex,
   onClose,
 }: {
   slide: SlideData;
+  slideIndex: number;
   onClose: () => void;
 }) {
+  const updateSlide = useStudioStore((s) => s.updateSlide);
+
+  // Local editable state — only written back to the store when the user hits
+  // "적용" (Save) so an accidental close doesn't mutate the deck.
+  const [title, setTitle] = useState(slide.title);
+  const [bullets, setBullets] = useState<string[]>(slide.bullets ?? []);
+  const [notes, setNotes] = useState(slide.notes ?? "");
+  const [imagePrompt, setImagePrompt] = useState(slide.imagePrompt ?? "");
+  const [imageUrl, setImageUrl] = useState<string | undefined>(slide.imageUrl);
+  const [regenerating, setRegenerating] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  const dirty =
+    title !== slide.title ||
+    JSON.stringify(bullets) !== JSON.stringify(slide.bullets ?? []) ||
+    notes !== (slide.notes ?? "") ||
+    imagePrompt !== (slide.imagePrompt ?? "") ||
+    imageUrl !== slide.imageUrl;
+
+  // Lock body scroll while the modal is open so background doesn't jiggle.
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = prev;
+    };
+  }, []);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
   }, [onClose]);
 
+  function updateBullet(i: number, value: string) {
+    setBullets((prev) => prev.map((b, idx) => (idx === i ? value : b)));
+  }
+  function removeBullet(i: number) {
+    setBullets((prev) => prev.filter((_, idx) => idx !== i));
+  }
+  function addBullet() {
+    if (bullets.length >= 6) return;
+    setBullets((prev) => [...prev, ""]);
+  }
+
+  async function handleRegenerate() {
+    if (regenerating) return;
+    setRegenerating(true);
+    try {
+      const url = await regenerateSlideImage({
+        title: title.trim() || slide.title,
+        bullets: bullets.filter((b) => b.trim().length > 0),
+        imagePrompt: imagePrompt.trim() || undefined,
+        imageStyle: slide.imageStyle,
+        kind: slide.kind,
+      });
+      setImageUrl(url);
+      toast.success("이미지를 새로 생성했습니다");
+    } catch (err) {
+      console.error(err);
+      toast.error(err instanceof Error ? err.message : "이미지 재생성 실패");
+    } finally {
+      setRegenerating(false);
+    }
+  }
+
+  async function handleUpload(file: File) {
+    try {
+      const url = await imageFileToDataUrl(file);
+      setImageUrl(url);
+      toast.success("이미지를 교체했습니다");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "이미지 업로드 실패");
+    }
+  }
+
+  function handleApply() {
+    setSaving(true);
+    const cleanedBullets = bullets.map((b) => b.trim()).filter((b) => b.length > 0);
+    updateSlide(slideIndex, {
+      title: title.trim() || slide.title,
+      bullets: cleanedBullets,
+      notes: notes.trim() ? notes.trim() : undefined,
+      imagePrompt: imagePrompt.trim() ? imagePrompt.trim() : undefined,
+      imageUrl,
+    });
+    setSaving(false);
+    toast.success("슬라이드를 수정했습니다");
+    onClose();
+  }
+
+  // Synthetic slide object for the live canvas preview.
+  const previewSlide: SlideData = {
+    ...slide,
+    title: title || slide.title,
+    bullets: bullets.length > 0 ? bullets : slide.bullets,
+    notes,
+    imagePrompt,
+    imageUrl,
+  };
+
   return (
     <motion.div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-ink-950/80 p-6 backdrop-blur-xl"
+      className="fixed inset-0 z-[90] flex items-center justify-center bg-ink-950/85 p-6 backdrop-blur-xl"
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
@@ -596,36 +718,174 @@ function ZoomModal({
     >
       <motion.div
         onClick={(e) => e.stopPropagation()}
-        initial={{ scale: 0.92, opacity: 0 }}
+        initial={{ scale: 0.96, opacity: 0 }}
         animate={{ scale: 1, opacity: 1 }}
-        exit={{ scale: 0.92, opacity: 0 }}
-        transition={{ duration: 0.25, ease: [0.22, 1, 0.36, 1] }}
-        className="relative w-full max-w-6xl overflow-hidden rounded-3xl border border-border/50 shadow-halo"
+        exit={{ scale: 0.96, opacity: 0 }}
+        transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
+        className="relative grid max-h-[90vh] w-full max-w-6xl grid-rows-[auto_1fr_auto] overflow-hidden rounded-3xl border border-border/50 bg-ink-950/95 shadow-halo"
       >
-        <SlideCanvas slide={slide} scale="zoom" />
-        <button
-          onClick={onClose}
-          className="focus-ring absolute right-4 top-4 flex h-10 w-10 items-center justify-center rounded-full border border-border/60 bg-ink-950/80 text-muted-foreground transition hover:border-electron/50 hover:text-foreground"
-          aria-label="닫기"
-        >
-          <X className="h-4 w-4" />
-        </button>
-        {(slide.notes || (slide.sources && slide.sources.length > 0)) && (
-          <div className="border-t border-border/50 bg-ink-950/80 p-4">
-            {slide.notes && (
-              <div>
-                <p className="mb-1 text-[10px] font-semibold uppercase tracking-[0.22em] text-muted-foreground">
-                  Speaker Notes
-                </p>
-                <p className="text-sm text-foreground/85">{slide.notes}</p>
+        <header className="flex shrink-0 items-center justify-between border-b border-border/60 px-5 py-3">
+          <div className="flex items-center gap-2 text-xs">
+            <span className="rounded-full border border-border/60 bg-muted/40 px-2 py-0.5 font-mono text-[10px] text-muted-foreground">
+              슬라이드 {slideIndex + 1}
+            </span>
+            <KindBadge kind={slide.kind} />
+            <span className="text-muted-foreground">편집 모드</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={handleApply}
+              disabled={!dirty || saving}
+              className="focus-ring inline-flex items-center gap-1.5 rounded-full bg-electron px-3 py-1.5 text-xs font-semibold text-background transition hover:bg-electron/90 disabled:opacity-40"
+            >
+              {saving ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
+              적용
+            </button>
+            <button
+              type="button"
+              onClick={onClose}
+              className="focus-ring flex h-8 w-8 items-center justify-center rounded-full border border-border/60 bg-muted/40 text-muted-foreground transition hover:border-electron/50 hover:text-foreground"
+              aria-label="닫기"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+        </header>
+
+        <div className="grid min-h-0 grid-cols-1 gap-0 overflow-hidden md:grid-cols-[minmax(0,3fr)_minmax(280px,1.4fr)]">
+          <div className="relative overflow-hidden bg-ink-900">
+            <SlideCanvas slide={previewSlide} scale="zoom" />
+          </div>
+
+          <div className="flex min-h-0 flex-col overflow-y-auto scrollbar-slim border-l border-border/60 bg-ink-950/60 p-5">
+            <section className="space-y-2.5">
+              <label className="text-[10px] font-semibold uppercase tracking-[0.22em] text-muted-foreground">
+                제목
+              </label>
+              <input
+                value={title}
+                onChange={(e) => setTitle(e.target.value)}
+                className="focus-ring w-full rounded-xl border border-border/70 bg-muted/40 px-3 py-2 text-sm"
+                placeholder="슬라이드 제목"
+              />
+            </section>
+
+            <section className="mt-5 space-y-2.5">
+              <div className="flex items-center justify-between">
+                <label className="text-[10px] font-semibold uppercase tracking-[0.22em] text-muted-foreground">
+                  내용 ({bullets.length})
+                </label>
+                <button
+                  type="button"
+                  onClick={addBullet}
+                  disabled={bullets.length >= 6}
+                  className="text-[11px] font-medium text-electron hover:text-electron/80 disabled:opacity-40"
+                >
+                  + 항목 추가
+                </button>
               </div>
-            )}
+              <ul className="space-y-2">
+                {bullets.map((b, i) => (
+                  <li key={i} className="flex items-start gap-2">
+                    <span className="mt-2.5 h-1 w-1 shrink-0 rounded-full bg-aurora" />
+                    <textarea
+                      value={b}
+                      onChange={(e) => updateBullet(i, e.target.value)}
+                      rows={2}
+                      className="focus-ring flex-1 resize-none rounded-lg border border-border/70 bg-muted/40 px-2.5 py-1.5 text-xs leading-relaxed"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => removeBullet(i)}
+                      className="mt-1 shrink-0 rounded-md p-1 text-muted-foreground transition hover:text-destructive"
+                      aria-label="삭제"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </section>
+
+            <section className="mt-5 space-y-2.5">
+              <label className="text-[10px] font-semibold uppercase tracking-[0.22em] text-muted-foreground">
+                Speaker Notes
+              </label>
+              <textarea
+                value={notes}
+                onChange={(e) => setNotes(e.target.value)}
+                rows={3}
+                placeholder="발표자 노트 (선택)"
+                className="focus-ring w-full resize-none rounded-xl border border-border/70 bg-muted/40 px-3 py-2 text-xs leading-relaxed"
+              />
+            </section>
+
+            <section className="mt-5 space-y-2.5">
+              <label className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.22em] text-muted-foreground">
+                <ImageUp className="h-3 w-3" /> 이미지 · 프롬프트 또는 직접 업로드
+              </label>
+              <textarea
+                value={imagePrompt}
+                onChange={(e) => setImagePrompt(e.target.value)}
+                rows={3}
+                placeholder="재생성 프롬프트 (예: 한국 고등학교 교실, 학생들이 기후 데이터 차트를 분석하는 장면, 늦은 오후 황금빛 조명)"
+                className="focus-ring w-full resize-none rounded-xl border border-border/70 bg-muted/40 px-3 py-2 text-xs leading-relaxed"
+              />
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={handleRegenerate}
+                  disabled={regenerating}
+                  className="focus-ring flex flex-1 items-center justify-center gap-1.5 rounded-xl border border-electron/50 bg-electron/10 px-3 py-2 text-xs font-semibold text-electron transition hover:bg-electron/20 disabled:opacity-50"
+                >
+                  {regenerating ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <RefreshCcw className="h-3.5 w-3.5" />
+                  )}
+                  {regenerating ? "생성 중..." : "나노바나나로 재생성"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  className="focus-ring flex flex-1 items-center justify-center gap-1.5 rounded-xl border border-border/70 bg-muted/40 px-3 py-2 text-xs font-semibold text-foreground transition hover:border-electron/40"
+                >
+                  <Upload className="h-3.5 w-3.5" />
+                  이미지 업로드
+                </button>
+              </div>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  if (f) handleUpload(f);
+                  e.currentTarget.value = "";
+                }}
+              />
+              {imageUrl && (
+                <div className="relative overflow-hidden rounded-xl border border-border/60">
+                  <img src={imageUrl} alt="" className="aspect-video w-full object-cover" />
+                  <button
+                    type="button"
+                    onClick={() => setImageUrl(undefined)}
+                    className="absolute right-2 top-2 rounded-full bg-ink-950/80 px-2 py-0.5 text-[10px] text-muted-foreground transition hover:text-destructive"
+                  >
+                    이미지 제거
+                  </button>
+                </div>
+              )}
+            </section>
+
             {slide.sources && slide.sources.length > 0 && (
-              <div className="mt-3 border-t border-border/40 pt-3">
-                <p className="mb-1 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.22em] text-aurora">
+              <section className="mt-5 space-y-2">
+                <p className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.22em] text-aurora">
                   <Link2 className="h-3 w-3" /> 출처
                 </p>
-                <ul className="space-y-0.5 text-xs text-foreground/80">
+                <ul className="space-y-0.5 text-[11px] text-foreground/80">
                   {slide.sources.map((s, i) => (
                     <li key={i}>
                       <span className="text-aurora/70">[{i + 1}]</span>{" "}
@@ -644,10 +904,15 @@ function ZoomModal({
                     </li>
                   ))}
                 </ul>
-              </div>
+              </section>
             )}
           </div>
-        )}
+        </div>
+
+        <footer className="flex shrink-0 items-center justify-between border-t border-border/60 bg-ink-950/80 px-5 py-2.5 text-[11px] text-muted-foreground">
+          <span>{dirty ? "변경사항이 있습니다 — 적용을 눌러 저장하세요." : "모든 변경이 적용되었습니다."}</span>
+          <span>ESC 로 닫기</span>
+        </footer>
       </motion.div>
     </motion.div>
   );

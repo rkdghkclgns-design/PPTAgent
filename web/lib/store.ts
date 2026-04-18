@@ -62,6 +62,7 @@ interface StudioState {
     meta?: { provider?: GenerateProvider; note?: string | null; sampleMode?: boolean },
   ) => void;
   setActiveSlide: (index: number) => void;
+  updateSlide: (index: number, patch: Partial<SlideData>) => void;
   succeed: (pptxUrl?: string | null) => void;
   fail: (error: string) => void;
   reset: () => void;
@@ -132,6 +133,13 @@ export const useStudioStore = create<StudioState>((set) => ({
       providerNote: meta?.note ?? null,
     }),
   setActiveSlide: (index) => set({ activeSlide: index }),
+  updateSlide: (index, patch) =>
+    set((s) => {
+      if (index < 0 || index >= s.slides.length) return {};
+      const next = s.slides.slice();
+      next[index] = { ...next[index], ...patch };
+      return { slides: next };
+    }),
   succeed: (pptxUrl) => set({ status: "succeeded", progress: 1, pptxUrl: pptxUrl ?? null }),
   fail: (error) => set({ status: "failed", error }),
   reset: () => set({ ...initial }),
