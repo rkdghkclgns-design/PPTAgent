@@ -60,6 +60,18 @@ export interface ImageLayout {
   h: number;
 }
 
+/** User-overridable text styling for a slide. All fields are optional. */
+export interface SlideTextStyle {
+  /** Multiplier applied to the title font size (default 1.0, range 0.7-1.6). */
+  titleScale?: number;
+  /** Multiplier applied to bullet/body font size (default 1.0, range 0.7-1.6). */
+  bulletScale?: number;
+  /** Typeface family; mapped to CSS font-family and PPTX fontFace. */
+  fontFamily?: "sans" | "serif" | "display";
+  /** Title weight override. */
+  titleWeight?: "semibold" | "bold";
+}
+
 export interface SlideData {
   index: number;
   kind: SlideKind;
@@ -82,6 +94,8 @@ export interface SlideData {
    * slide). When omitted or null, the kind's default slot is used.
    */
   imageLayouts?: Array<ImageLayout | null>;
+  /** Slide-specific text styling overrides. */
+  textStyle?: SlideTextStyle;
   /** Art-direction hint from the outline model. */
   imageStyle?: ImageStyle;
   /** Composition variant used by both the web preview and the PPTX renderer. */
@@ -176,6 +190,7 @@ export async function generateDeck(req: GenerateRequest): Promise<GenerateResult
       imageStyle?: ImageStyle;
       layoutVariant?: LayoutVariant;
       imageLayouts?: Array<ImageLayout | null>;
+      textStyle?: SlideTextStyle;
       diagram?: string;
       sources?: Array<{ label: string; url?: string }>;
     }>;
@@ -203,6 +218,7 @@ export async function generateDeck(req: GenerateRequest): Promise<GenerateResult
       imageStyle: s.imageStyle,
       layoutVariant: s.layoutVariant,
       imageLayouts: s.imageLayouts,
+      textStyle: s.textStyle,
       diagram: s.diagram,
       sources: s.sources?.filter((src) => src?.label),
     };
