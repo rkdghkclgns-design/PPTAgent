@@ -21,25 +21,7 @@ GOOGLE_MODELS: list[ModelOption] = [
         label="Gemini 2.5 Flash Image (나노바나나)",
         kind=ModelKind.image,
         default_for=["t2i_model"],
-        notes="기본값. 편집 일러스트·사진 품질이 가장 균일하며 안전 필터 통과율이 높음.",
-    ),
-    ModelOption(
-        id="google/imagen-4.0-generate-001",
-        label="Imagen 4 (Standard)",
-        kind=ModelKind.image,
-        notes="고해상도 실사 스타일에 최적. 나노바나나 폴백.",
-    ),
-    ModelOption(
-        id="google/imagen-4.0-fast-generate-001",
-        label="Imagen 4 Fast",
-        kind=ModelKind.image,
-        notes="빠른 프리뷰용.",
-    ),
-    ModelOption(
-        id="google/imagen-4.0-ultra-generate-001",
-        label="Imagen 4 Ultra",
-        kind=ModelKind.image,
-        notes="최고 품질(1장만 생성). 표지·키 비주얼용.",
+        notes="모든 슬라이드 이미지를 단일 모델로 생성 — 톤·품질이 일관됨.",
     ),
     ModelOption(
         id="google/gemini-2.0-flash",

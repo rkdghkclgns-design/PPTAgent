@@ -1,21 +1,22 @@
-// Supabase Edge Function: generate (v15)
+// Supabase Edge Function: generate (v16)
 //
 // Resolution chain for the LLM key:
 //   ENV GOOGLE_API_KEY → ENV GEMINI_API_KEY → ENV ANTHROPIC_API_KEY
 //   → vault GOOGLE_API_KEY / GEMINI_API_KEY → vault ANTHROPIC_API_KEY
 //   → sample (graceful fallback, never 500)
 //
-// What v15 changes over v14:
-//  - Nano-banana (Gemini 2.5 Flash Image) is now the PRIMARY image generator
-//    for every style; Imagen 4 is only a fallback when nano-banana fails.
-//  - Attachment budget raised to 20k chars per file (from 8k) and the
-//    system prompt now *requires* the outline to cover the structure /
-//    headings of the attached material end-to-end, including a recap in
-//    the summary slide — fixes cases where the deck ran out before the
-//    attachment's content was exhausted.
-//  - Art direction sharpened (explicit "award-winning editorial",
-//    "ultra-detailed", "1024+ resolution" cues) so nano-banana returns
-//    crisper, higher-fidelity imagery.
+// What v16 changes over v15:
+//  - Image pipeline is now nano-banana ONLY (Gemini 2.5 Flash Image).
+//    Imagen chain removed entirely — single model family keeps every deck
+//    visually coherent.
+//  - The image prompt now carries the slide's actual content (title + top
+//    bullets + kind) so the generated image matches what the slide says,
+//    not just a loose `imagePrompt` phrase. Premium-quality art direction
+//    ("cover of a top-tier design magazine", "8K", "master-level color")
+//    added.
+//  - Two-shot retry: if nano-banana returns no image on the first call
+//    (safety filter hit, transient error) we retry once with a safer
+//    prompt variant before giving up.
 
 // deno-lint-ignore-file no-explicit-any
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
@@ -390,100 +391,82 @@ async function callGeminiOnce(
 }
 
 // ---------------------------------------------------------------------------
-// Image generation chain: Imagen 4 → Imagen 4 Fast → Gemini 2.5 Flash Image.
-// Every returned slide either has a REAL AI-generated PNG or b64=null. We do
-// NOT synthesise procedural "dummy" gradients — the UI skips slides without
-// an imageB64 entirely.
+// Image generation: nano-banana (Gemini 2.5 Flash Image) ONLY. One model
+// family keeps every deck visually coherent, and nano-banana's editorial
+// strength matches the premium aesthetic we want. The art prompt feeds the
+// slide's real content (title + bullets + kind) into the generator so the
+// image is actually ABOUT what the slide covers, not a loose abstract.
+// Retries once with a simplified prompt when the safety filter trips.
 // ---------------------------------------------------------------------------
 
-// Nano-banana first for every style (per user request for higher-quality,
-// more consistent imagery across the deck), then Imagen 4 as quality fallback.
-const IMAGE_FALLBACK_CHAIN = ["imagen-4.0-generate-001", "imagen-4.0-fast-generate-001"] as const;
-
-// Art-direction scaffold applied to every image prompt so results feel like a
-// coherent editorial deck instead of 10 disparate stock images. Each entry
-// leans on explicit quality cues ("award-winning", "ultra-detailed") which
-// nano-banana responds to strongly.
+// Per-style art direction. Every entry leans on premium-magazine cues so
+// nano-banana trends toward cover-quality, cohesive, high-end imagery.
 const STYLE_DIRECTION: Record<ImageStyle, string> = {
   photo:
-    "Award-winning editorial documentary photography, shot on full-frame camera, natural window light, shallow depth of field, cinematic color grading with muted teal-orange palette, magazine-cover composition, ultra-sharp focus, realistic skin and fabric texture, high dynamic range, 4K quality.",
+    "Master-level editorial documentary photograph, full-frame camera, anamorphic lens, natural key light, shallow depth of field, cinematic teal-and-amber color grade, high dynamic range, ultra-sharp focus on the subject, realistic skin and fabric texture, film-grain finish, cover of a top-tier magazine.",
   illustration:
-    "Premium editorial vector illustration with subtle texture, award-winning design-magazine aesthetic, flat forms layered over soft noise-grain gradients, generous negative space, cohesive palette of deep indigo / warm amber / off-white, rounded geometric forms, confident linework, ultra-crisp at any size.",
+    "Premium editorial vector illustration, award-winning design-magazine aesthetic, flat forms layered over soft noise-grain gradients, generous negative space, cohesive palette of deep indigo / warm amber / off-white, rounded geometric forms, confident linework, ultra-crisp edges, evocative mood.",
   diagram:
-    "Sleek isometric infographic, clean vector shapes, abstract glyph annotations in place of any real letters, muted dark-academia palette with a single vivid accent, subtle shadows, minimal and editorially refined, pixel-perfect edges.",
+    "Elegant isometric infographic, clean vector shapes, abstract glyphs stand in for every label (no letters), muted dark-academia palette with a single vivid accent, subtle drop shadows, pixel-perfect edges, editorial magazine polish.",
   abstract:
-    "Cinematic abstract composition: layered volumetric gradients, film-grain texture, soft bokeh particles, deep indigo drifting into warm ember, moody chiaroscuro lighting, gallery-quality, ultra-detailed, evocative mood.",
+    "Cinematic abstract art, layered volumetric gradients, film-grain texture, soft bokeh particles, deep indigo drifting into warm ember, chiaroscuro lighting, gallery-quality, ultra-detailed, mood-forward, no subject clutter.",
 };
 
-function buildArtPrompt(userPrompt: string, style: ImageStyle, kind: SlideKind): string {
-  const framing = kind === "cover" || kind === "summary"
-    ? "Hero full-bleed composition with strong focal point, subject on rule-of-thirds line, large negative space on the left or bottom-left so a title can overlay without clipping the subject."
-    : kind === "objectives"
-      ? "Conceptual illustration representing goals/learning targets, composed as a vertical or side-panel image that reads cleanly at half-slide size."
-      : kind === "qna"
-        ? "Minimal ambient composition with an open, contemplative mood — suggestive of dialogue or reflection, low visual noise."
-        : "Balanced mid-distance composition with one clear subject and supporting environmental detail; reads well at 42% slide width.";
+const FRAMING: Record<SlideKind, string> = {
+  cover:
+    "Hero full-bleed composition with a commanding focal point on a rule-of-thirds line, generous negative space on the left or bottom-left for a title overlay; conveys the deck's core theme at a glance.",
+  objectives:
+    "Conceptual illustration evoking goals / learning targets (pathway, summit, roadmap, signposts — metaphor over literal). Composed to read cleanly as a half-slide side panel.",
+  content:
+    "Balanced mid-distance composition with one clear subject plus supporting environmental detail; reads crisply at ~42% slide width and reinforces the specific idea of this slide.",
+  summary:
+    "Hero full-bleed composition echoing the cover — closing / recap feeling, negative space for title overlay, thematically consistent with the deck.",
+  qna:
+    "Minimal contemplative composition suggesting open dialogue or reflection; low visual noise, one soft focal point.",
+};
+
+function pickSubjectHints(title: string, bullets: string[], userPrompt?: string): string {
+  const top = bullets.slice(0, 2).map((b) => `• ${b}`).join(" ");
+  const extra = userPrompt ? `Additional direction: ${userPrompt}` : "";
   return [
-    `SUBJECT: ${userPrompt}`,
+    `Slide title: "${title}".`,
+    top ? `Key points this slide covers: ${top}` : "",
+    extra,
+  ].filter(Boolean).join(" ");
+}
+
+function buildArtPrompt(slide: Slide, style: ImageStyle, kind: SlideKind): string {
+  const subject = pickSubjectHints(slide.title, slide.bullets ?? [], slide.imagePrompt);
+  return [
+    "Design a single high-end presentation illustration that visually represents the slide below.",
+    subject,
     `STYLE: ${STYLE_DIRECTION[style]}`,
-    `FRAMING: ${framing}`,
-    "Resolution: render at 1600x900 or higher, 16:9 aspect ratio. Photorealistic detail where applicable; crisp edges on illustrations.",
-    "STRICT: absolutely no written text, letters, numbers, captions, labels, watermarks, signage, or logos inside the image. The image must be text-free.",
+    `FRAMING: ${FRAMING[kind]}`,
+    "OUTPUT: 16:9 aspect ratio, render at 1600x900 or higher, clean editorial composition, consistent with a premium design-magazine visual identity.",
+    "STRICT: the image MUST contain absolutely no written text, letters, numbers, captions, labels, watermarks, signage, subtitles, UI chrome, or logos. Communicate the idea purely through imagery — any pixel that looks like text is a failure.",
   ].join("\n");
 }
 
-async function callImagen(
-  apiKey: string,
-  prompt: string,
-  model: string,
-  style: ImageStyle,
-  kind: SlideKind,
-): Promise<{ b64: string | null; err?: string }> {
-  const body = {
-    instances: [{ prompt: buildArtPrompt(prompt, style, kind) }],
-    parameters: {
-      sampleCount: 1,
-      aspectRatio: "16:9",
-      safetyFilterLevel: "block_few",
-      personGeneration: "allow_adult",
-    },
-  };
-  try {
-    const res = await fetch(`${GENAI_BASE}/models/${encodeURIComponent(model)}:predict`, {
-      method: "POST",
-      headers: { "content-type": "application/json", "x-goog-api-key": apiKey },
-      body: JSON.stringify(body),
-    });
-    if (!res.ok) {
-      const errText = (await res.text()).slice(0, 200);
-      return { b64: null, err: `imagen[${model}] ${res.status}: ${errText}` };
-    }
-    const data = await res.json();
-    const b64 = data?.predictions?.[0]?.bytesBase64Encoded;
-    if (typeof b64 === "string" && b64.length > 0) return { b64 };
-    return { b64: null, err: `imagen[${model}] empty response (safety filter?)` };
-  } catch (err) {
-    return { b64: null, err: `imagen[${model}] ${String(err).slice(0, 200)}` };
-  }
+// Simpler, safer re-prompt used when the first attempt returns no image
+// (typically a safety-filter trip on the enriched prompt).
+function buildSafeArtPrompt(slide: Slide, style: ImageStyle, kind: SlideKind): string {
+  const topic = slide.imagePrompt || slide.title;
+  return [
+    `Create a tasteful ${style === "photo" ? "photograph" : style === "diagram" ? "infographic" : style === "abstract" ? "abstract composition" : "editorial illustration"} representing: ${topic}.`,
+    `FRAMING: ${FRAMING[kind]}`,
+    "16:9 aspect ratio, premium editorial quality, no text or letters anywhere.",
+  ].join("\n");
 }
 
-// Gemini 2.5 Flash Image (nano-banana). Uses the standard generateContent
-// endpoint with responseModalities=["IMAGE"] and full art direction so the
-// resulting image is citation-quality, not a generic cartoon.
 async function callGeminiImage(
   apiKey: string,
-  prompt: string,
-  style: ImageStyle,
-  kind: SlideKind,
+  text: string,
+  temperature: number,
 ): Promise<{ b64: string | null; err?: string }> {
   const model = "gemini-2.5-flash-image";
-  const text = buildArtPrompt(prompt, style, kind);
   const payload = {
     contents: [{ role: "user", parts: [{ text }] }],
-    generationConfig: {
-      responseModalities: ["IMAGE"],
-      temperature: 0.7,
-    },
+    generationConfig: { responseModalities: ["IMAGE"], temperature },
   };
   try {
     const res = await fetch(`${GENAI_BASE}/models/${encodeURIComponent(model)}:generateContent`, {
@@ -509,40 +492,21 @@ async function callGeminiImage(
 
 async function generateSlideImage(
   apiKey: string,
-  prompt: string,
-  primaryModel: string,
+  slide: Slide,
   style: ImageStyle,
   kind: SlideKind,
 ): Promise<{ b64: string | null; modelUsed?: string; errors: string[] }> {
   const errors: string[] = [];
-  const tried = new Set<string>();
+  // Attempt 1: rich content-aware prompt, mid temperature.
+  const first = await callGeminiImage(apiKey, buildArtPrompt(slide, style, kind), 0.75);
+  if (first.b64) return { b64: first.b64, modelUsed: "gemini-2.5-flash-image", errors };
+  if (first.err) errors.push(first.err);
 
-  const tryModel = async (model: string): Promise<string | null> => {
-    if (tried.has(model)) return null;
-    tried.add(model);
-    if (model.startsWith("gemini-")) {
-      const r = await callGeminiImage(apiKey, prompt, style, kind);
-      if (r.b64) return r.b64;
-      if (r.err) errors.push(r.err);
-      return null;
-    }
-    const r = await callImagen(apiKey, prompt, model, style, kind);
-    if (r.b64) return r.b64;
-    if (r.err) errors.push(r.err);
-    return null;
-  };
+  // Attempt 2: safer, narrower prompt — often clears a safety-filter hit.
+  const second = await callGeminiImage(apiKey, buildSafeArtPrompt(slide, style, kind), 0.6);
+  if (second.b64) return { b64: second.b64, modelUsed: "gemini-2.5-flash-image", errors };
+  if (second.err) errors.push(second.err);
 
-  // Nano-banana (Gemini 2.5 Flash Image) is the primary generator for EVERY
-  // style. The user-selected Imagen model and its fast sibling are only
-  // tried if nano-banana fails (safety filter, transient error). This keeps
-  // the deck visually consistent — every image comes from the same model
-  // family — and maximises quality per nano-banana's editorial strengths.
-  const chain = ["gemini-2.5-flash-image", primaryModel, ...IMAGE_FALLBACK_CHAIN];
-
-  for (const m of chain) {
-    const b64 = await tryModel(m);
-    if (b64) return { b64, modelUsed: m, errors };
-  }
   return { b64: null, errors };
 }
 
@@ -644,14 +608,8 @@ serve(async (req) => {
   const deckType: DeckType = (["lecture", "pitch", "report", "analysis", "generic"] as DeckType[]).includes(rawDeckType as DeckType)
     ? (rawDeckType as DeckType) : "generic";
   const chatModel = String(body.chat_model ?? "gemini-2.5-flash");
-  const rawImageModel = String(body.image_model ?? "gemini-2.5-flash-image")
-    .replace(/^google\//, "");
-  // Imagen 3 was shut down on 2025-11-10 — transparently upgrade any stale
-  // client-sent model ids to the Imagen 4 equivalents so old builds still work.
-  const imageModel =
-    rawImageModel === "imagen-3.0-generate-002" ? "imagen-4.0-generate-001"
-    : rawImageModel === "imagen-3.0-fast-generate-001" ? "imagen-4.0-fast-generate-001"
-    : rawImageModel;
+  // image_model is accepted for backward compatibility but ignored — image
+  // generation is hard-pinned to nano-banana (Gemini 2.5 Flash Image).
   const attachments: Attachment[] = Array.isArray(body.attachments) ? body.attachments.slice(0, 8) : [];
   if (prompt.length < 2) return bad(origin, 400, "prompt too short");
 
@@ -687,10 +645,10 @@ serve(async (req) => {
             const i = cursor++;
             if (i >= slides.length) return;
             const ip = slides[i].imagePrompt;
-            if (!ip) continue;
+            if (!ip && !slides[i].title) continue;
             const style = slides[i].imageStyle ?? "illustration";
             const kind = slides[i].kind ?? "content";
-            const r = await generateSlideImage(key, ip, imageModel, style, kind);
+            const r = await generateSlideImage(key, slides[i], style, kind);
             results[i] = { b64: r.b64, modelUsed: r.modelUsed };
             if (r.errors.length > 0) errors.push(...r.errors);
           }
@@ -733,10 +691,10 @@ serve(async (req) => {
       if (googleKey) {
         for (let i = 0; i < slides.length; i++) {
           const ip = slides[i].imagePrompt;
-          if (!ip) continue;
+          if (!ip && !slides[i].title) continue;
           const style = slides[i].imageStyle ?? "illustration";
           const kind = slides[i].kind ?? "content";
-          const r = await callGeminiImage(googleKey, ip, style, kind);
+          const r = await generateSlideImage(googleKey, slides[i], style, kind);
           slides[i].imageB64 = r.b64;
         }
       } else {
