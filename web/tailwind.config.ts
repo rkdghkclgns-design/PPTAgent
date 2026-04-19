@@ -56,8 +56,10 @@ const config: Config = {
         destructive: "hsl(var(--destructive))",
       },
       fontFamily: {
-        sans: ["var(--font-satoshi)", "var(--font-inter)", "system-ui", "sans-serif"],
-        display: ["var(--font-satoshi)", "var(--font-inter)", "system-ui", "sans-serif"],
+        // Pretendard (한글 + 영문 지원)을 최우선으로 두고, 실패 시 Inter/Satoshi로 폴백.
+        sans: ["Pretendard", "var(--font-inter)", "system-ui", "sans-serif"],
+        display: ["Pretendard", "var(--font-satoshi)", "var(--font-inter)", "system-ui", "sans-serif"],
+        serif: ["\"Noto Serif KR\"", "Georgia", "serif"],
         mono: ["var(--font-jetbrains)", "ui-monospace", "SFMono-Regular", "monospace"],
       },
       fontSize: {

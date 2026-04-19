@@ -12,13 +12,17 @@ import {
 } from "./imageLayouts";
 import { renderMermaid, svgToPngDataUrl } from "./mermaid";
 
-/** Font-face mapping shared by every PPTX text block. */
+/**
+ * Font-face mapping shared by every PPTX text block. Pretendard is the
+ * default for both "sans" and "display" — it ships great Korean + Latin
+ * glyphs and looks consistent with the web preview.
+ */
 function fontFaceFor(ts: SlideTextStyle | undefined): string {
   switch (ts?.fontFamily) {
-    case "sans": return "Inter";
     case "serif": return "Noto Serif KR";
+    case "sans":
     case "display":
-    default: return "Inter";
+    default: return "Pretendard";
   }
 }
 function titleScaleFor(ts: SlideTextStyle | undefined): number {

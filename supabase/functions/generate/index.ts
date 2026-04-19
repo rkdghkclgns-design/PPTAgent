@@ -1,22 +1,18 @@
-// Supabase Edge Function: generate (v16)
+// Supabase Edge Function: generate (v17)
 //
 // Resolution chain for the LLM key:
 //   ENV GOOGLE_API_KEY → ENV GEMINI_API_KEY → ENV ANTHROPIC_API_KEY
 //   → vault GOOGLE_API_KEY / GEMINI_API_KEY → vault ANTHROPIC_API_KEY
 //   → sample (graceful fallback, never 500)
 //
-// What v16 changes over v15:
-//  - Image pipeline is now nano-banana ONLY (Gemini 2.5 Flash Image).
-//    Imagen chain removed entirely — single model family keeps every deck
-//    visually coherent.
-//  - The image prompt now carries the slide's actual content (title + top
-//    bullets + kind) so the generated image matches what the slide says,
-//    not just a loose `imagePrompt` phrase. Premium-quality art direction
-//    ("cover of a top-tier design magazine", "8K", "master-level color")
-//    added.
-//  - Two-shot retry: if nano-banana returns no image on the first call
-//    (safety filter hit, transient error) we retry once with a safer
-//    prompt variant before giving up.
+// What v17 changes over v16:
+//  - Speaker Notes rewritten to be *lecturer-ready*: each `notes` field
+//    is now ~3-5 sentences of natural-speech narration (not a summary),
+//    includes a concrete practical example, real-world quotation, or
+//    named case study, and reads at the right cadence for 45-75s of
+//    speaking time per slide.
+//  - Bullet cap raised (180 chars) so the richer content from the
+//    outline model isn't truncated.
 
 // deno-lint-ignore-file no-explicit-any
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
@@ -159,8 +155,9 @@ function systemPrompt(slideCount: number, language: string, deckType: DeckType):
     structure,
     DECK_FLAVOR[deckType],
     "Do NOT prefix titles with slide numbers (e.g., write 'Market Overview', not '3. Market Overview').",
-    "Keep output compact: title <=60 chars, each bullet <=80 chars, notes <=220 chars, imagePrompt <=220 chars.",
-    "Every slide MUST have: title, bullets (3-5 items), notes (1-2 speaker notes sentences), imagePrompt (vivid ENGLISH description of ONE illustrative image, NO text in the image), imageStyle, layoutVariant.",
+    "Length budgets: title <=60 chars, each bullet <=80 chars, imagePrompt <=220 chars. `notes` is intentionally LONGER — see speaker-note rules below.",
+    "Every slide MUST have: title, bullets (3-5 items), notes (see speaker-note rules), imagePrompt (vivid ENGLISH description of ONE illustrative image, NO text in the image), imageStyle, layoutVariant.",
+    "SPEAKER NOTES — the `notes` field is the lecturer's script. It must read as if spoken live, not like a summary of the bullets. Requirements: (1) 3-5 sentences, 180-360 characters in the slide's language; (2) natural conversational tone that a presenter can read verbatim; (3) contain AT LEAST ONE concrete practical element — a named case study, a real-world quotation with attribution (e.g. '\ub9c8\uc774\ud06c\ub85c\uc18c\ud504\ud2b8 CEO \uc0ac\ud2f0\uc544 \ub098\ub370\ub77c\ub294 ...'), a specific number or metric (e.g. 'Netflix\ub294 2023\ub144 \uae30\uc900 ...'), a workplace anecdote, or a hands-on example the audience can visualize; (4) connect the bullets to the example with cause-and-effect wording (\u2018\uc989\u2019, \u2018\uad6c\uccb4\uc801\uc73c\ub85c\u2019, \u2018\uc608\ub97c \ub4e4\uc5b4\u2019); (5) never invent fabricated numbers that look like sourced facts — if you cite a figure, populate the sources array with the same attribution. Cite attachments when their facts are used: {\"label\":\"\ucca8\ubd80: <filename>\"}.",
     "Set `kind` on every slide exactly following the structure above.",
     "Set `imageStyle` to one of: 'photo' (realistic editorial photography — best for case studies, real-world subjects), 'illustration' (flat/vector editorial illustration — best for concepts, objectives, summaries), 'diagram' (schematic infographic — when the content is a system/process), 'abstract' (moody gradient/texture — for transitions, cover slides).",
     "Set `layoutVariant` to one of: 'hero' (full-bleed image with overlaid title — prefer for cover and summary), 'split-right' (text left, image right — default for content), 'split-left' (image left, text right — alternate every other content slide), 'stacked' (text on top, image below — for objectives or numbered lists), 'quote' (centered large text, no image — for punchline/pivot slides). VARY across the deck so no two adjacent slides share a layoutVariant.",
@@ -210,7 +207,9 @@ function clampSlides(slides: Slide[], slideCount: number): Slide[] {
       kind: rawKind ?? (i === 0 ? "cover" : "content"),
       title: cleanTitle(String(s.title ?? "")),
       bullets: Array.isArray(s.bullets) ? s.bullets.map((b) => String(b).slice(0, 160)).slice(0, 6) : [],
-      notes: s.notes ? String(s.notes).slice(0, 500) : undefined,
+      // Speaker notes are now the lecturer's script — larger budget so the
+      // model's concrete examples/quotations survive serialization.
+      notes: s.notes ? String(s.notes).slice(0, 900) : undefined,
       imagePrompt: s.imagePrompt ? String(s.imagePrompt).slice(0, 500) : undefined,
       imageStyle: rawStyle,
       layoutVariant: rawVariant,

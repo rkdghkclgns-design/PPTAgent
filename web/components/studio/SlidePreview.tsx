@@ -790,7 +790,7 @@ function TextStyleEditor({
                 f === "serif" && "font-serif",
               )}
             >
-              {f === "display" ? "디스플레이" : f === "sans" ? "고딕" : "명조"}
+              {f === "display" ? "디스플레이" : f === "sans" ? "프리텐다드" : "명조"}
             </button>
           ))}
         </div>
@@ -913,13 +913,7 @@ function ThumbnailStrip({
           )}
           title={s.title}
         >
-          {s.imageUrl ? (
-            <img src={s.imageUrl} alt="" className="absolute inset-0 h-full w-full object-cover" />
-          ) : (
-            <div className="absolute inset-0 flex items-center justify-center p-1.5 text-center text-[8px] font-medium leading-tight text-foreground/70">
-              {s.title.slice(0, 24)}
-            </div>
-          )}
+          <MiniSlideThumb slide={s} />
           <span className="absolute bottom-0.5 right-1 rounded bg-ink-950/70 px-1 text-[9px] font-mono text-muted-foreground">
             {i + 1}
           </span>
@@ -931,6 +925,32 @@ function ThumbnailStrip({
           className="relative aspect-video animate-pulse rounded-lg border border-border/40 bg-muted/20"
         />
       ))}
+    </div>
+  );
+}
+
+/**
+ * Miniature slide thumbnail that renders the full SlideCanvas (title,
+ * bullets, diagram, gallery, text styling) at a fixed 960×540 virtual
+ * canvas and scales it down to fit the thumbnail box via CSS container
+ * queries. Keeps the thumbnail visually identical to the full slide.
+ */
+function MiniSlideThumb({ slide }: { slide: SlideData }) {
+  return (
+    <div
+      className="absolute inset-0 overflow-hidden"
+      style={{ containerType: "inline-size" } as React.CSSProperties}
+    >
+      <div
+        className="pointer-events-none absolute left-0 top-0 origin-top-left"
+        style={{
+          width: 960,
+          height: 540,
+          transform: "scale(calc(100cqw / 960px))",
+        }}
+      >
+        <SlideCanvas slide={slide} scale="zoom" />
+      </div>
     </div>
   );
 }
@@ -1041,26 +1061,26 @@ function FullscreenDeck({
         </div>
       </div>
       <footer className="shrink-0 overflow-x-auto border-t border-border/40 bg-ink-950/80 px-5 py-3">
-        <div className="flex gap-2">
+        {/*
+          items-center + explicit width/height lock the 16:9 thumbnails —
+          aspect-video alone collapsed to ~20px inside this flex row because
+          the default align-items:stretch overrode the aspect ratio.
+        */}
+        <div className="flex items-center gap-2">
           {slides.map((s, i) => (
             <button
               key={i}
               type="button"
               onClick={() => onSelect(i)}
+              style={{ width: 160, height: 90 }}
               className={cn(
-                "relative aspect-video w-28 shrink-0 overflow-hidden rounded-lg border border-border/50 bg-ink-900 transition",
+                "relative shrink-0 overflow-hidden rounded-lg border border-border/50 bg-ink-900 transition",
                 active === i && "border-electron ring-2 ring-electron/40",
               )}
               title={s.title}
             >
-              {s.imageUrl ? (
-                <img src={s.imageUrl} alt="" className="absolute inset-0 h-full w-full object-cover" />
-              ) : (
-                <div className="absolute inset-0 flex items-center justify-center p-1.5 text-center text-[9px] font-medium leading-tight text-foreground/70">
-                  {s.title.slice(0, 24)}
-                </div>
-              )}
-              <span className="absolute bottom-0.5 right-1 rounded bg-ink-950/80 px-1 text-[9px] font-mono text-muted-foreground">
+              <MiniSlideThumb slide={s} />
+              <span className="absolute bottom-0.5 right-1 rounded bg-ink-950/80 px-1 text-[10px] font-mono text-muted-foreground">
                 {i + 1}
               </span>
             </button>
