@@ -1,24 +1,24 @@
-// Supabase Edge Function: generate (v19)
+// Supabase Edge Function: generate (v20)
 //
 // Resolution chain for the LLM key:
 //   ENV GOOGLE_API_KEY → ENV GEMINI_API_KEY → ENV ANTHROPIC_API_KEY
 //   → vault GOOGLE_API_KEY / GEMINI_API_KEY → vault ANTHROPIC_API_KEY
 //   → sample (graceful fallback, never 500)
 //
-// What v19 changes over v18:
-//  - Robust JSON extraction. Gemini 2.5 (now thinking-only) sometimes
-//    returns `{...valid json...}` followed by extra prose or a trailing
-//    code-fence, causing "Unexpected non-whitespace character after JSON
-//    at position N". The parser now:
-//      1) strips ```json / ``` code fences,
-//      2) uses brace-depth walking to slice out the first balanced
-//         top-level object before calling JSON.parse,
-//      3) falls back to the existing truncation-recovery path.
-//  - Prompt clarified: response must be ONLY the JSON object, no
-//    markdown fences, no prose before or after.
+// What v20 changes over v19:
+//  - ACTUALLY remove `thinkingConfig: { thinkingBudget: 0 }` from the
+//    Gemini generationConfig. v18's changelog claimed this was removed
+//    but the code still had it, so Gemini 2.5 Flash rejected every
+//    request with 400 "Budget 0 is invalid. This model only works in
+//    thinking mode." and the edge function fell back to sample mode.
+//    Removing the block lets Gemini 2.5 use its default thinking
+//    budget (which is what the model is designed for).
 //
+// What v19 changed over v18:
+//  - Robust JSON extraction (stripCodeFences + brace-walker) so
+//    trailing prose or code fences no longer break JSON.parse.
 // What v18 changed over v17:
-//  - Removed thinkingBudget:0 (Gemini 2.5 rejected it).
+//  - (intended) Removed thinkingBudget:0 — completed in v20.
 // What v17 changed over v16:
 //  - Speaker Notes rewritten to be *lecturer-ready*.
 
@@ -411,8 +411,13 @@ async function callGeminiOnce(
     generationConfig: {
       responseMimeType: "application/json",
       temperature: 0.6,
-      maxOutputTokens: Math.min(60000, 3000 + slideCount * 900),
-      thinkingConfig: { thinkingBudget: 0 },
+      // Bigger ceiling because Gemini 2.5 is now *thinking-only* — a portion
+      // of maxOutputTokens is consumed by the internal chain-of-thought
+      // before the JSON response starts streaming.
+      maxOutputTokens: Math.min(65535, 8000 + slideCount * 1200),
+      // NOTE: thinkingBudget:0 is rejected by Gemini 2.5 ("Budget 0 is
+      // invalid. This model only works in thinking mode."). Leaving
+      // thinkingConfig out entirely uses the model's default budget.
     },
   };
   const res = await fetch(`${GENAI_BASE}/models/${encodeURIComponent(model)}:generateContent`, {
