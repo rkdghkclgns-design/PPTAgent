@@ -1,18 +1,26 @@
-// Supabase Edge Function: generate (v17)
+// Supabase Edge Function: generate (v19)
 //
 // Resolution chain for the LLM key:
 //   ENV GOOGLE_API_KEY → ENV GEMINI_API_KEY → ENV ANTHROPIC_API_KEY
 //   → vault GOOGLE_API_KEY / GEMINI_API_KEY → vault ANTHROPIC_API_KEY
 //   → sample (graceful fallback, never 500)
 //
-// What v17 changes over v16:
-//  - Speaker Notes rewritten to be *lecturer-ready*: each `notes` field
-//    is now ~3-5 sentences of natural-speech narration (not a summary),
-//    includes a concrete practical example, real-world quotation, or
-//    named case study, and reads at the right cadence for 45-75s of
-//    speaking time per slide.
-//  - Bullet cap raised (180 chars) so the richer content from the
-//    outline model isn't truncated.
+// What v19 changes over v18:
+//  - Robust JSON extraction. Gemini 2.5 (now thinking-only) sometimes
+//    returns `{...valid json...}` followed by extra prose or a trailing
+//    code-fence, causing "Unexpected non-whitespace character after JSON
+//    at position N". The parser now:
+//      1) strips ```json / ``` code fences,
+//      2) uses brace-depth walking to slice out the first balanced
+//         top-level object before calling JSON.parse,
+//      3) falls back to the existing truncation-recovery path.
+//  - Prompt clarified: response must be ONLY the JSON object, no
+//    markdown fences, no prose before or after.
+//
+// What v18 changed over v17:
+//  - Removed thinkingBudget:0 (Gemini 2.5 rejected it).
+// What v17 changed over v16:
+//  - Speaker Notes rewritten to be *lecturer-ready*.
 
 // deno-lint-ignore-file no-explicit-any
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
@@ -262,12 +270,41 @@ function clampSlides(slides: Slide[], slideCount: number): Slide[] {
   return cleaned;
 }
 
-function parseSlidesFromText(raw: string): Slide[] {
-  let body = raw.trim();
-  if (!body.startsWith("{")) {
-    const m = body.match(/\{[\s\S]*\}/);
-    if (m) body = m[0];
+/** Strip ```json ... ``` and ``` ... ``` fences that Gemini sometimes adds. */
+function stripCodeFences(raw: string): string {
+  const m = raw.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+  return m ? m[1] : raw;
+}
+
+/**
+ * Walk the string brace-by-brace and return the first balanced top-level
+ * JSON object. Handles strings and escapes so braces inside values don't
+ * break the count. Returns null when no complete object is present.
+ */
+function extractFirstJsonObject(text: string): string | null {
+  const startIdx = text.indexOf("{");
+  if (startIdx < 0) return null;
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+  for (let i = startIdx; i < text.length; i++) {
+    const ch = text[i];
+    if (escape) { escape = false; continue; }
+    if (ch === "\\") { escape = true; continue; }
+    if (ch === '"') { inString = !inString; continue; }
+    if (inString) continue;
+    if (ch === "{") depth++;
+    else if (ch === "}") {
+      depth--;
+      if (depth === 0) return text.slice(startIdx, i + 1);
+    }
   }
+  return null;
+}
+
+function parseSlidesFromText(raw: string): Slide[] {
+  const unfenced = stripCodeFences(raw).trim();
+  const body = extractFirstJsonObject(unfenced) ?? unfenced;
   try {
     const parsed = JSON.parse(body);
     const slides = (parsed.slides ?? parsed) as Slide[];
