@@ -1,24 +1,37 @@
-// Supabase Edge Function: generate (v20)
+// Supabase Edge Function: generate (v22)
 //
 // Resolution chain for the LLM key:
 //   ENV GOOGLE_API_KEY → ENV GEMINI_API_KEY → ENV ANTHROPIC_API_KEY
 //   → vault GOOGLE_API_KEY / GEMINI_API_KEY → vault ANTHROPIC_API_KEY
 //   → sample (graceful fallback, never 500)
 //
-// What v20 changes over v19:
-//  - ACTUALLY remove `thinkingConfig: { thinkingBudget: 0 }` from the
-//    Gemini generationConfig. v18's changelog claimed this was removed
-//    but the code still had it, so Gemini 2.5 Flash rejected every
-//    request with 400 "Budget 0 is invalid. This model only works in
-//    thinking mode." and the edge function fell back to sample mode.
-//    Removing the block lets Gemini 2.5 use its default thinking
-//    budget (which is what the model is designed for).
+// What v22 changes over v21:
+//  - Disable Gemini 2.5 Flash thinking mode (`thinkingBudget: 0`). v20
+//    believed flash rejected budget 0 with "Budget 0 is invalid. This
+//    model only works in thinking mode." — that error actually comes from
+//    gemini-2.5-PRO (where 128 is the floor). For gemini-2.5-flash and
+//    -flash-lite, budget 0 is valid and disables thinking, cutting wall
+//    time 5-10x. With thinking on, even a 20-slide text-only generation
+//    chunked 2x10 could still clear the ~150s edge runtime cap; with it
+//    off, each chunk resolves in ~8-15s.
+//  - Add a 90s AbortController timeout per Gemini call so a hung model
+//    fails fast and surfaces an actionable error instead of getting
+//    killed as HTTP 546 WORKER_LIMIT.
+//  - Shrink per-chunk token budget and drop chunk size from 10 → 7 to
+//    keep each call's response small enough to return quickly.
 //
+// What v21 changed over v20:
+//  - Remove inline image generation entirely. Images are now fanned out
+//    by the browser client against `regenerate-image` (one HTTP call per
+//    slide, in parallel). This alone fixed the image-related 546s.
+//
+// What v20 changed over v19:
+//  - ACTUALLY removed `thinkingConfig: { thinkingBudget: 0 }` from the
+//    Gemini generationConfig (v18's changelog claimed this but the code
+//    still had it).
 // What v19 changed over v18:
 //  - Robust JSON extraction (stripCodeFences + brace-walker) so
 //    trailing prose or code fences no longer break JSON.parse.
-// What v18 changed over v17:
-//  - (intended) Removed thinkingBudget:0 — completed in v20.
 // What v17 changed over v16:
 //  - Speaker Notes rewritten to be *lecturer-ready*.
 
@@ -376,7 +389,10 @@ async function callGemini(
   model: string,
   attachments: Attachment[],
 ): Promise<Slide[]> {
-  const CHUNK = 10; // smaller chunks for richer per-slide payloads (diagram + sources)
+  // v22: chunk size reduced from 10→7 so each Gemini call resolves in
+  // well under 20s even in the worst case. Two 7-slide chunks for a 14
+  // slide deck take ≈25-35s total, far under the 150s edge runtime cap.
+  const CHUNK = 7;
   if (slideCount <= CHUNK) {
     return callGeminiOnce(apiKey, prompt, slideCount, language, deckType, model, attachments);
   }
@@ -396,6 +412,28 @@ async function callGemini(
   return all.slice(0, slideCount);
 }
 
+/** Only Gemini 2.5 Pro mandates thinking (floor 128). Flash variants accept 0. */
+function supportsThinkingDisable(model: string): boolean {
+  const m = model.toLowerCase();
+  return m.includes("gemini-2.5-flash") || m.includes("gemini-2.0") || m.includes("gemini-1.5");
+}
+
+/** Fetch wrapper that aborts after `ms` and surfaces a friendly error. */
+async function fetchWithTimeout(url: string, init: RequestInit, ms: number): Promise<Response> {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), ms);
+  try {
+    return await fetch(url, { ...init, signal: ctl.signal });
+  } catch (err) {
+    if ((err as Error)?.name === "AbortError") {
+      throw new Error(`gemini request timed out after ${ms}ms`);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function callGeminiOnce(
   apiKey: string,
   prompt: string,
@@ -405,26 +443,48 @@ async function callGeminiOnce(
   model: string,
   attachments: Attachment[],
 ): Promise<Slide[]> {
-  const payload = {
-    contents: [{ role: "user", parts: buildGeminiUserParts(prompt, attachments) }],
-    systemInstruction: { parts: [{ text: systemPrompt(slideCount, language, deckType) }] },
-    generationConfig: {
-      responseMimeType: "application/json",
-      temperature: 0.6,
-      // Bigger ceiling because Gemini 2.5 is now *thinking-only* — a portion
-      // of maxOutputTokens is consumed by the internal chain-of-thought
-      // before the JSON response starts streaming.
-      maxOutputTokens: Math.min(65535, 8000 + slideCount * 1200),
-      // NOTE: thinkingBudget:0 is rejected by Gemini 2.5 ("Budget 0 is
-      // invalid. This model only works in thinking mode."). Leaving
-      // thinkingConfig out entirely uses the model's default budget.
-    },
+  const baseConfig = {
+    responseMimeType: "application/json",
+    temperature: 0.6,
+    // Thinking off → output tokens are all used for the JSON payload.
+    // Keep a healthy ceiling but no longer over-provision.
+    maxOutputTokens: Math.min(32768, 3000 + slideCount * 700),
   };
-  const res = await fetch(`${GENAI_BASE}/models/${encodeURIComponent(model)}:generateContent`, {
-    method: "POST",
-    headers: { "content-type": "application/json", "x-goog-api-key": apiKey },
-    body: JSON.stringify(payload),
-  });
+  const parts = buildGeminiUserParts(prompt, attachments);
+  const system = { parts: [{ text: systemPrompt(slideCount, language, deckType) }] };
+  const url = `${GENAI_BASE}/models/${encodeURIComponent(model)}:generateContent`;
+  const post = async (withThinkingOff: boolean): Promise<Response> => {
+    const payload = {
+      contents: [{ role: "user", parts }],
+      systemInstruction: system,
+      generationConfig: withThinkingOff
+        ? { ...baseConfig, thinkingConfig: { thinkingBudget: 0 } }
+        : baseConfig,
+    };
+    return fetchWithTimeout(
+      url,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-goog-api-key": apiKey },
+        body: JSON.stringify(payload),
+      },
+      90_000,
+    );
+  };
+
+  // Try with thinking OFF for flash/older models — 5-10x faster. If the API
+  // rejects (e.g. model variant where budget 0 is invalid), fall back to
+  // default thinking behaviour so the request still succeeds.
+  let res = await post(supportsThinkingDisable(model));
+  if (!res.ok && res.status === 400 && supportsThinkingDisable(model)) {
+    const body = (await res.text()).slice(0, 300);
+    if (/thinking|budget/i.test(body)) {
+      console.warn("gemini rejected thinkingBudget:0, retrying with default budget", body);
+      res = await post(false);
+    } else {
+      throw new Error(`gemini 400: ${body}`);
+    }
+  }
   if (!res.ok) throw new Error(`gemini ${res.status}: ${(await res.text()).slice(0, 300)}`);
   const data = await res.json();
   const text = data?.candidates?.[0]?.content?.parts?.map((p: any) => p.text ?? "").join("") ?? "";
@@ -432,124 +492,11 @@ async function callGeminiOnce(
 }
 
 // ---------------------------------------------------------------------------
-// Image generation: nano-banana (Gemini 2.5 Flash Image) ONLY. One model
-// family keeps every deck visually coherent, and nano-banana's editorial
-// strength matches the premium aesthetic we want. The art prompt feeds the
-// slide's real content (title + bullets + kind) into the generator so the
-// image is actually ABOUT what the slide covers, not a loose abstract.
-// Retries once with a simplified prompt when the safety filter trips.
+// Image generation lives in the `regenerate-image` edge function and is
+// called one-per-slide from the browser (see web/lib/api.ts). This keeps
+// every edge invocation short enough to stay under the Supabase Edge
+// Runtime wall-clock cap and gives the client progressive image delivery.
 // ---------------------------------------------------------------------------
-
-// Per-style art direction. Every entry leans on premium-magazine cues so
-// nano-banana trends toward cover-quality, cohesive, high-end imagery.
-const STYLE_DIRECTION: Record<ImageStyle, string> = {
-  photo:
-    "Master-level editorial documentary photograph, full-frame camera, anamorphic lens, natural key light, shallow depth of field, cinematic teal-and-amber color grade, high dynamic range, ultra-sharp focus on the subject, realistic skin and fabric texture, film-grain finish, cover of a top-tier magazine.",
-  illustration:
-    "Premium editorial vector illustration, award-winning design-magazine aesthetic, flat forms layered over soft noise-grain gradients, generous negative space, cohesive palette of deep indigo / warm amber / off-white, rounded geometric forms, confident linework, ultra-crisp edges, evocative mood.",
-  diagram:
-    "Elegant isometric infographic, clean vector shapes, abstract glyphs stand in for every label (no letters), muted dark-academia palette with a single vivid accent, subtle drop shadows, pixel-perfect edges, editorial magazine polish.",
-  abstract:
-    "Cinematic abstract art, layered volumetric gradients, film-grain texture, soft bokeh particles, deep indigo drifting into warm ember, chiaroscuro lighting, gallery-quality, ultra-detailed, mood-forward, no subject clutter.",
-};
-
-const FRAMING: Record<SlideKind, string> = {
-  cover:
-    "Hero full-bleed composition with a commanding focal point on a rule-of-thirds line, generous negative space on the left or bottom-left for a title overlay; conveys the deck's core theme at a glance.",
-  objectives:
-    "Conceptual illustration evoking goals / learning targets (pathway, summit, roadmap, signposts — metaphor over literal). Composed to read cleanly as a half-slide side panel.",
-  content:
-    "Balanced mid-distance composition with one clear subject plus supporting environmental detail; reads crisply at ~42% slide width and reinforces the specific idea of this slide.",
-  summary:
-    "Hero full-bleed composition echoing the cover — closing / recap feeling, negative space for title overlay, thematically consistent with the deck.",
-  qna:
-    "Minimal contemplative composition suggesting open dialogue or reflection; low visual noise, one soft focal point.",
-};
-
-function pickSubjectHints(title: string, bullets: string[], userPrompt?: string): string {
-  const top = bullets.slice(0, 2).map((b) => `• ${b}`).join(" ");
-  const extra = userPrompt ? `Additional direction: ${userPrompt}` : "";
-  return [
-    `Slide title: "${title}".`,
-    top ? `Key points this slide covers: ${top}` : "",
-    extra,
-  ].filter(Boolean).join(" ");
-}
-
-function buildArtPrompt(slide: Slide, style: ImageStyle, kind: SlideKind): string {
-  const subject = pickSubjectHints(slide.title, slide.bullets ?? [], slide.imagePrompt);
-  return [
-    "Design a single high-end presentation illustration that visually represents the slide below.",
-    subject,
-    `STYLE: ${STYLE_DIRECTION[style]}`,
-    `FRAMING: ${FRAMING[kind]}`,
-    "OUTPUT: 16:9 aspect ratio, render at 1600x900 or higher, clean editorial composition, consistent with a premium design-magazine visual identity.",
-    "STRICT: the image MUST contain absolutely no written text, letters, numbers, captions, labels, watermarks, signage, subtitles, UI chrome, or logos. Communicate the idea purely through imagery — any pixel that looks like text is a failure.",
-  ].join("\n");
-}
-
-// Simpler, safer re-prompt used when the first attempt returns no image
-// (typically a safety-filter trip on the enriched prompt).
-function buildSafeArtPrompt(slide: Slide, style: ImageStyle, kind: SlideKind): string {
-  const topic = slide.imagePrompt || slide.title;
-  return [
-    `Create a tasteful ${style === "photo" ? "photograph" : style === "diagram" ? "infographic" : style === "abstract" ? "abstract composition" : "editorial illustration"} representing: ${topic}.`,
-    `FRAMING: ${FRAMING[kind]}`,
-    "16:9 aspect ratio, premium editorial quality, no text or letters anywhere.",
-  ].join("\n");
-}
-
-async function callGeminiImage(
-  apiKey: string,
-  text: string,
-  temperature: number,
-): Promise<{ b64: string | null; err?: string }> {
-  const model = "gemini-2.5-flash-image";
-  const payload = {
-    contents: [{ role: "user", parts: [{ text }] }],
-    generationConfig: { responseModalities: ["IMAGE"], temperature },
-  };
-  try {
-    const res = await fetch(`${GENAI_BASE}/models/${encodeURIComponent(model)}:generateContent`, {
-      method: "POST",
-      headers: { "content-type": "application/json", "x-goog-api-key": apiKey },
-      body: JSON.stringify(payload),
-    });
-    if (!res.ok) {
-      const errText = (await res.text()).slice(0, 200);
-      return { b64: null, err: `gemini-image ${res.status}: ${errText}` };
-    }
-    const data = await res.json();
-    const parts = data?.candidates?.[0]?.content?.parts ?? [];
-    for (const p of parts) {
-      const inline = p?.inlineData ?? p?.inline_data;
-      if (inline?.data && typeof inline.data === "string") return { b64: inline.data };
-    }
-    return { b64: null, err: "gemini-image: no inline image in response (safety filter?)" };
-  } catch (err) {
-    return { b64: null, err: `gemini-image ${String(err).slice(0, 200)}` };
-  }
-}
-
-async function generateSlideImage(
-  apiKey: string,
-  slide: Slide,
-  style: ImageStyle,
-  kind: SlideKind,
-): Promise<{ b64: string | null; modelUsed?: string; errors: string[] }> {
-  const errors: string[] = [];
-  // Attempt 1: rich content-aware prompt, mid temperature.
-  const first = await callGeminiImage(apiKey, buildArtPrompt(slide, style, kind), 0.75);
-  if (first.b64) return { b64: first.b64, modelUsed: "gemini-2.5-flash-image", errors };
-  if (first.err) errors.push(first.err);
-
-  // Attempt 2: safer, narrower prompt — often clears a safety-filter hit.
-  const second = await callGeminiImage(apiKey, buildSafeArtPrompt(slide, style, kind), 0.6);
-  if (second.b64) return { b64: second.b64, modelUsed: "gemini-2.5-flash-image", errors };
-  if (second.err) errors.push(second.err);
-
-  return { b64: null, errors };
-}
 
 // ---------------------------------------------------------------------------
 // Anthropic Claude (text-only path)
@@ -671,52 +618,19 @@ serve(async (req) => {
     return sample("GOOGLE_API_KEY / GEMINI_API_KEY / ANTHROPIC_API_KEY 가 구성되지 않았습니다.");
   }
 
+  // v21: images are generated by the browser client via the
+  // `regenerate-image` edge function (one HTTP call per slide, in parallel)
+  // to keep this invocation under Supabase's Edge Runtime wall-clock cap.
+  // imageB64 is intentionally left unset; the client fans out after it
+  // receives the outline.
+  const imageNote = includeImages
+    ? "이미지는 브라우저에서 슬라이드별로 병렬 생성됩니다."
+    : undefined;
+
   if (provider === "google") {
     try {
       const slides = await callGemini(key, prompt, slideCount, language, deckType, chatModel, attachments);
-      let imageNote: string | undefined;
-      const modelCounts: Record<string, number> = {};
-      if (includeImages) {
-        const limit = 4;
-        const results: Array<{ b64: string | null; modelUsed?: string }> = slides.map(() => ({ b64: null }));
-        const errors: string[] = [];
-        let cursor = 0;
-        const worker = async () => {
-          while (true) {
-            const i = cursor++;
-            if (i >= slides.length) return;
-            const ip = slides[i].imagePrompt;
-            if (!ip && !slides[i].title) continue;
-            const style = slides[i].imageStyle ?? "illustration";
-            const kind = slides[i].kind ?? "content";
-            const r = await generateSlideImage(key, slides[i], style, kind);
-            results[i] = { b64: r.b64, modelUsed: r.modelUsed };
-            if (r.errors.length > 0) errors.push(...r.errors);
-          }
-        };
-        await Promise.all(Array.from({ length: limit }, worker));
-        let succeeded = 0;
-        for (let i = 0; i < slides.length; i++) {
-          const r = results[i];
-          if (r.b64) {
-            slides[i].imageB64 = r.b64;
-            succeeded++;
-            if (r.modelUsed) modelCounts[r.modelUsed] = (modelCounts[r.modelUsed] ?? 0) + 1;
-          } else {
-            // Root requirement: never fabricate "dummy" covers. Leave null so
-            // the UI lays out the slide without a placeholder image.
-            slides[i].imageB64 = null;
-          }
-        }
-        const missing = slides.filter((s) => s.imagePrompt && !s.imageB64).length;
-        if (succeeded === 0 && errors.length > 0) {
-          imageNote = `이미지 생성 전체 실패. 첫 오류: ${errors[0]}`;
-        } else if (missing > 0) {
-          imageNote = `${missing}장은 이미지 생성 실패(안전 필터/쿼터). 나머지는 ${Object.entries(modelCounts).map(([m, c]) => `${m}×${c}`).join(", ")}.`;
-        } else if (Object.keys(modelCounts).length > 0) {
-          imageNote = `이미지 모델 사용: ${Object.entries(modelCounts).map(([m, c]) => `${m}×${c}`).join(", ")}.`;
-        }
-      }
+      for (const s of slides) s.imageB64 = null;
       return respond(slides, "google", imageNote);
     } catch (err) {
       return sample(`Google API failed: ${String(err).slice(0, 300)}`);
@@ -725,24 +639,8 @@ serve(async (req) => {
 
   try {
     const slides = await callClaude(key, prompt, slideCount, language, deckType, attachments);
-    if (includeImages) {
-      // Anthropic path: try Gemini 2.5 Flash Image if we happen to have a
-      // Google key available; otherwise leave null (no dummy).
-      const googleKey = Deno.env.get("GOOGLE_API_KEY") ?? Deno.env.get("GEMINI_API_KEY") ?? "";
-      if (googleKey) {
-        for (let i = 0; i < slides.length; i++) {
-          const ip = slides[i].imagePrompt;
-          if (!ip && !slides[i].title) continue;
-          const style = slides[i].imageStyle ?? "illustration";
-          const kind = slides[i].kind ?? "content";
-          const r = await generateSlideImage(googleKey, slides[i], style, kind);
-          slides[i].imageB64 = r.b64;
-        }
-      } else {
-        for (let i = 0; i < slides.length; i++) slides[i].imageB64 = null;
-      }
-    }
-    return respond(slides, "anthropic", "Anthropic Claude 텍스트 + Gemini 이미지(키 있을 때).");
+    for (const s of slides) s.imageB64 = null;
+    return respond(slides, "anthropic", imageNote ?? "Anthropic Claude 텍스트 응답.");
   } catch (err) {
     return sample(`Anthropic API failed: ${String(err).slice(0, 300)}`);
   }

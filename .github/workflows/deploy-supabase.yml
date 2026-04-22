@@ -1,15 +1,15 @@
-# Deploy Supabase Edge Function (llm-proxy) whenever the function code
-# or shared helpers change.
+# Deploy Supabase Edge Functions whenever the function code or shared
+# helpers change.
 #
 # Secrets required:
 #   SUPABASE_ACCESS_TOKEN      - https://supabase.com/dashboard/account/tokens
-#   SUPABASE_PROJECT_REF       - project ref (8-char)
+#   SUPABASE_PROJECT_REF       - project ref (20-char)
 #   SUPABASE_DB_PASSWORD       - only needed for DB-migration steps (optional)
 #
 # The Google API key itself is NOT a GitHub secret - it's a Supabase secret
 # that was set once locally via `supabase secrets set GOOGLE_API_KEY=...`.
 # We intentionally avoid re-uploading it on every deploy to reduce blast radius.
-name: Deploy Supabase Edge Function
+name: Deploy Supabase Edge Functions
 
 on:
   push:
@@ -22,9 +22,9 @@ on:
     inputs:
       function:
         type: choice
-        options: [llm-proxy]
-        default: llm-proxy
-        description: Function to deploy
+        options: [all, llm-proxy, generate, regenerate-image]
+        default: all
+        description: Function(s) to deploy
 
 concurrency:
   group: deploy-supabase
@@ -38,6 +38,7 @@ jobs:
     env:
       SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
       SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
+      DEPLOY_TARGET: ${{ github.event.inputs.function || 'all' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -48,18 +49,36 @@ jobs:
       - name: Link project
         run: supabase link --project-ref "$SUPABASE_PROJECT_REF"
 
-      - name: Lint function
-        run: supabase functions deploy --dry-run llm-proxy
-
       - name: Deploy llm-proxy
+        if: env.DEPLOY_TARGET == 'all' || env.DEPLOY_TARGET == 'llm-proxy'
         # JWT verification is ENABLED. Callers must present a valid Supabase
         # anon or service-role token. Do not add --no-verify-jwt without a
         # replacement auth scheme in place.
         run: supabase functions deploy llm-proxy
 
-      - name: Verify health (OPTIONS)
+      - name: Deploy generate
+        if: env.DEPLOY_TARGET == 'all' || env.DEPLOY_TARGET == 'generate'
+        # generate accepts the anon key in the Authorization header; JWT
+        # verification is skipped so the Pages build can call it without
+        # a user session.
+        run: supabase functions deploy generate --no-verify-jwt
+
+      - name: Deploy regenerate-image
+        if: env.DEPLOY_TARGET == 'all' || env.DEPLOY_TARGET == 'regenerate-image'
+        run: supabase functions deploy regenerate-image --no-verify-jwt
+
+      - name: Verify llm-proxy health (OPTIONS)
+        if: env.DEPLOY_TARGET == 'all' || env.DEPLOY_TARGET == 'llm-proxy'
         run: |
           URL="https://${SUPABASE_PROJECT_REF}.supabase.co/functions/v1/llm-proxy"
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X OPTIONS "$URL")
+          echo "status=$STATUS"
+          [[ "$STATUS" == "200" || "$STATUS" == "204" ]]
+
+      - name: Verify generate health (OPTIONS)
+        if: env.DEPLOY_TARGET == 'all' || env.DEPLOY_TARGET == 'generate'
+        run: |
+          URL="https://${SUPABASE_PROJECT_REF}.supabase.co/functions/v1/generate"
           STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X OPTIONS "$URL")
           echo "status=$STATUS"
           [[ "$STATUS" == "200" || "$STATUS" == "204" ]]

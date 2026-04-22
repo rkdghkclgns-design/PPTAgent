@@ -247,6 +247,60 @@ export interface RegenerateImageInput {
   kind: SlideKind;
 }
 
+export interface FetchSlideImagesOptions {
+  /** Max parallel regenerate-image calls. Default 6. */
+  concurrency?: number;
+  /** Called each time a slide's image successfully resolves. */
+  onImageReady?: (index: number, dataUrl: string) => void;
+  /** Called when a slide's image fails (safety filter / quota / network). */
+  onImageError?: (index: number, message: string) => void;
+  /** Called after every slide completes (success OR failure). */
+  onProgress?: (completed: number, total: number) => void;
+}
+
+/**
+ * Fan out `regenerate-image` calls across every slide that has an
+ * `imagePrompt` or `title`. The edge function in front of us is hard-limited
+ * to ~150s wall-clock per invocation, so we stay under that by making one
+ * HTTP call per slide and bounding browser-side concurrency.
+ */
+export async function fetchSlideImages(
+  slides: SlideData[],
+  opts: FetchSlideImagesOptions = {},
+): Promise<void> {
+  const concurrency = Math.max(1, Math.min(10, opts.concurrency ?? 6));
+  const targets = slides
+    .map((s, index) => ({ s, index }))
+    .filter(({ s }) => Boolean(s.imagePrompt) || Boolean(s.title));
+  if (targets.length === 0) return;
+
+  let cursor = 0;
+  let completed = 0;
+  const worker = async () => {
+    while (true) {
+      const i = cursor++;
+      if (i >= targets.length) return;
+      const { s, index } = targets[i];
+      try {
+        const url = await regenerateSlideImage({
+          title: s.title,
+          bullets: s.bullets ?? [],
+          imagePrompt: s.imagePrompt,
+          imageStyle: s.imageStyle,
+          kind: s.kind,
+        });
+        opts.onImageReady?.(index, url);
+      } catch (err) {
+        opts.onImageError?.(index, err instanceof Error ? err.message : String(err));
+      } finally {
+        completed++;
+        opts.onProgress?.(completed, targets.length);
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: concurrency }, worker));
+}
+
 /** Calls the edge function and returns a data URL ready for <img src=...>. */
 export async function regenerateSlideImage(input: RegenerateImageInput): Promise<string> {
   if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {

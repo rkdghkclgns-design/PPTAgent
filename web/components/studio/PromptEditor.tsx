@@ -20,7 +20,7 @@ import { ModelSelector } from "@/components/studio/ModelSelector";
 import { TemplateManager } from "@/components/studio/TemplateManager";
 import { useStudioStore } from "@/lib/store";
 import type { AttachmentEntry } from "@/lib/store";
-import { fileToAttachment, generateDeck } from "@/lib/api";
+import { fetchSlideImages, fileToAttachment, generateDeck } from "@/lib/api";
 import { cn, formatBytes } from "@/lib/utils";
 
 const PROMPT_SUGGESTIONS = [
@@ -50,6 +50,7 @@ export function PromptEditor() {
   const status = useStudioStore((s) => s.status);
   const beginJob = useStudioStore((s) => s.beginJob);
   const setSlides = useStudioStore((s) => s.setSlides);
+  const updateSlide = useStudioStore((s) => s.updateSlide);
   const updateProgress = useStudioStore((s) => s.updateProgress);
   const succeed = useStudioStore((s) => s.succeed);
   const fail = useStudioStore((s) => s.fail);
@@ -123,6 +124,34 @@ export function PromptEditor() {
         note: result.note ?? null,
         sampleMode: result.sample_mode ?? result.provider === "sample",
       });
+      updateProgress(0.45);
+
+      // v21 split-phase: the `generate` edge function only returns the
+      // outline so it stays under the Edge Runtime wall-clock cap. Images
+      // are fanned out now against `regenerate-image` (one HTTP call per
+      // slide) so the cap is per-image, not per-deck.
+      if (
+        includeImages &&
+        result.provider !== "sample" &&
+        result.slides.length > 0
+      ) {
+        clearInterval(heartbeat);
+        const imageErrors: string[] = [];
+        await fetchSlideImages(result.slides, {
+          concurrency: 6,
+          onImageReady: (index, dataUrl) =>
+            updateSlide(index, { imageUrl: dataUrl, images: [dataUrl] }),
+          onImageError: (_index, message) => imageErrors.push(message),
+          onProgress: (done, total) =>
+            updateProgress(0.45 + 0.5 * (done / Math.max(1, total))),
+        });
+        if (imageErrors.length > 0) {
+          toast.message("일부 슬라이드 이미지를 생성하지 못했습니다", {
+            description: `${imageErrors.length}장 실패 · 개별 슬라이드에서 재생성 가능`,
+          });
+        }
+      }
+
       succeed();
       if (result.provider === "sample") {
         toast.message("샘플 모드", {
