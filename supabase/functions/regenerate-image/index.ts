@@ -1,6 +1,7 @@
 // Supabase Edge Function: regenerate-image
 //
-// Single-slide image regeneration via nano-banana (Gemini 2.5 Flash Image).
+// Single-slide image regeneration. Pinned to gemini-3.1-flash-image-preview
+// (next-gen nano-banana) for higher fidelity than the 2.5 generation.
 // Client sends { title, bullets, imagePrompt, imageStyle, kind }; we return
 // { b64: string } on success or { error } on failure.
 
@@ -105,7 +106,7 @@ function buildArtPrompt(title: string, bullets: string[], imagePrompt: string, s
 }
 
 async function callGeminiImage(apiKey: string, text: string, temperature: number): Promise<{ b64: string | null; err?: string }> {
-  const model = "gemini-2.5-flash-image";
+  const model = "gemini-3.1-flash-image-preview";
   const payload = {
     contents: [{ role: "user", parts: [{ text }] }],
     generationConfig: { responseModalities: ["IMAGE"], temperature },
@@ -157,7 +158,7 @@ serve(async (req) => {
 
   const prompt = buildArtPrompt(title, bullets, imagePrompt, style, kind);
   const first = await callGeminiImage(key, prompt, 0.75);
-  if (first.b64) return json(200, { b64: first.b64, modelUsed: "gemini-2.5-flash-image" }, origin);
+  if (first.b64) return json(200, { b64: first.b64, modelUsed: "gemini-3.1-flash-image-preview" }, origin);
 
   // Retry with a safer, narrower prompt.
   const safe = [
@@ -166,7 +167,7 @@ serve(async (req) => {
     "16:9 aspect ratio, premium editorial quality, no text or letters anywhere.",
   ].join("\n");
   const second = await callGeminiImage(key, safe, 0.6);
-  if (second.b64) return json(200, { b64: second.b64, modelUsed: "gemini-2.5-flash-image" }, origin);
+  if (second.b64) return json(200, { b64: second.b64, modelUsed: "gemini-3.1-flash-image-preview" }, origin);
 
   return json(502, { error: second.err ?? first.err ?? "image generation failed" }, origin);
 });

@@ -39,9 +39,11 @@ export const MODEL_SLOT_HINT: Record<ModelSlot, string> = {
   design_agent: "HTML 슬라이드를 설계하는 최종 단계.",
 };
 
-/** Default model for each slot - nano-banana is the image default per product decision. */
+/** Default model for each slot — image generation is pinned to the
+ *  3.1 preview (next-gen nano-banana) which significantly upgrades the
+ *  fidelity over 2.5 Flash Image. */
 export const DEFAULT_MODELS: Record<ModelSlot, string> = {
-  t2i_model: "google/gemini-2.5-flash-image",
+  t2i_model: "google/gemini-3.1-flash-image-preview",
   research_agent: "google/gemini-2.5-flash",
   long_context_model: "google/gemini-2.5-flash",
   vision_model: "google/gemini-2.0-flash-vision",
@@ -50,12 +52,12 @@ export const DEFAULT_MODELS: Record<ModelSlot, string> = {
 
 export const GOOGLE_MODELS: ModelOption[] = [
   {
-    id: "google/gemini-2.5-flash-image",
-    label: "Gemini 2.5 Flash Image (나노바나나)",
+    id: "google/gemini-3.1-flash-image-preview",
+    label: "Gemini 3.1 Flash Image (preview · 나노바나나 차세대)",
     kind: "image",
     family: "google",
     defaultFor: ["t2i_model"],
-    notes: "모든 슬라이드 이미지를 단일 모델로 생성 — 편집 일러스트·사진 품질이 균일하고 톤이 일관됨.",
+    notes: "차세대 나노바나나. 2.5 대비 디테일·톤 일관성·텍스트 회피가 크게 개선된 프리뷰 모델.",
   },
   {
     id: "google/gemini-2.0-flash",

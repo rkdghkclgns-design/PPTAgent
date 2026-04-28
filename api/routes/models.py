@@ -17,11 +17,11 @@ router = APIRouter(tags=["models"])
 
 GOOGLE_MODELS: list[ModelOption] = [
     ModelOption(
-        id="google/gemini-2.5-flash-image",
-        label="Gemini 2.5 Flash Image (나노바나나)",
+        id="google/gemini-3.1-flash-image-preview",
+        label="Gemini 3.1 Flash Image (preview · 나노바나나 차세대)",
         kind=ModelKind.image,
         default_for=["t2i_model"],
-        notes="모든 슬라이드 이미지를 단일 모델로 생성 — 톤·품질이 일관됨.",
+        notes="차세대 나노바나나. 2.5 대비 디테일·톤 일관성·텍스트 회피가 크게 개선된 프리뷰 모델.",
     ),
     ModelOption(
         id="google/gemini-2.0-flash",

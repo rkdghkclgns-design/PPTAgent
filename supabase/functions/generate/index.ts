@@ -596,8 +596,9 @@ serve(async (req) => {
   const deckType: DeckType = (["lecture", "pitch", "report", "analysis", "generic"] as DeckType[]).includes(rawDeckType as DeckType)
     ? (rawDeckType as DeckType) : "generic";
   const chatModel = String(body.chat_model ?? "gemini-2.5-flash");
-  // image_model is accepted for backward compatibility but ignored — image
-  // generation is hard-pinned to nano-banana (Gemini 2.5 Flash Image).
+  // image_model is accepted for backward compatibility but ignored —
+  // image generation lives in `regenerate-image` and is hard-pinned to
+  // gemini-3.1-flash-image-preview there.
   const attachments: Attachment[] = Array.isArray(body.attachments) ? body.attachments.slice(0, 8) : [];
   if (prompt.length < 2) return bad(origin, 400, "prompt too short");
 
