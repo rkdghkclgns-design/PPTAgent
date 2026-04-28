@@ -35,7 +35,7 @@ export default function StudioPage() {
           </div>
         </div>
         <div className="hidden items-center gap-3 text-xs text-muted-foreground md:flex">
-          <span>Model routing · Google Imagen / Gemini via Supabase Edge</span>
+          <span>Model routing · Gemini 3.1 Flash Image / Gemini 2.5 via Supabase Edge</span>
           <ConnectionBadge />
         </div>
       </header>

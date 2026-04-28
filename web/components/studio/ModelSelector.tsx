@@ -37,7 +37,7 @@ export function ModelSelector() {
         ))}
       </div>
       <p className="text-xs text-muted-foreground">
-        기본값은 <span className="font-semibold text-foreground">Google Imagen</span> (T2I) ·{" "}
+        기본값은 <span className="font-semibold text-foreground">Gemini 3.1 Flash Image (preview)</span> (T2I) ·{" "}
         <span className="font-semibold text-foreground">Gemini 2.5 Pro</span> (Design). 언제든 변경할 수 있습니다.
       </p>
     </div>

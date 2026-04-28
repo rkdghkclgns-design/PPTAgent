@@ -72,10 +72,50 @@ function makeId(): string {
   return `tpl_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
+/**
+ * Map deprecated model IDs → current model IDs. Saved templates predate the
+ * 3.1 image preview pin, so when we read them back we transparently rewrite
+ * their `overrides` so the dropdown shows the right label and the request
+ * payload uses the right model. Add new entries here whenever a model is
+ * retired or replaced.
+ */
+const MODEL_ID_REWRITES: Record<string, string> = {
+  "google/gemini-2.5-flash-image": "google/gemini-3.1-flash-image-preview",
+};
+
+function migrateOverrides(overrides: ModelOverrides | undefined): ModelOverrides {
+  if (!overrides) return {};
+  const out: ModelOverrides = {};
+  (Object.entries(overrides) as Array<[keyof ModelOverrides, string | undefined]>).forEach(
+    ([slot, value]) => {
+      if (!value) return;
+      out[slot] = MODEL_ID_REWRITES[value] ?? value;
+    },
+  );
+  return out;
+}
+
+function migrateTemplate(t: DeckTemplate): DeckTemplate {
+  const migrated = migrateOverrides(t.overrides);
+  // Preserve immutability — only return a new object when something actually
+  // changed, so React/Zustand referential equality still works on the no-op
+  // path.
+  const same =
+    Object.keys(migrated).length === Object.keys(t.overrides ?? {}).length &&
+    Object.entries(migrated).every(([k, v]) => (t.overrides as Record<string, string>)[k] === v);
+  return same ? t : { ...t, overrides: migrated };
+}
+
 export function listTemplates(): DeckTemplate[] {
   const raw = safeRead<DeckTemplate[]>(STORAGE_KEY, []);
+  const migrated = raw.map(migrateTemplate);
+  // Persist migrations so the next read is a no-op and the saved template
+  // visibly reflects the new model id.
+  if (migrated.some((t, i) => t !== raw[i])) {
+    safeWrite(STORAGE_KEY, migrated);
+  }
   // Sort newest-first.
-  return [...raw].sort((a, b) => (a.savedAt < b.savedAt ? 1 : -1));
+  return [...migrated].sort((a, b) => (a.savedAt < b.savedAt ? 1 : -1));
 }
 
 export function saveTemplate(

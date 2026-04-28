@@ -45,7 +45,7 @@ export default function HomePage() {
 
           <p className="mx-auto mt-8 max-w-2xl text-balance text-lg text-muted-foreground">
             PPTAgent 의 멀티 에이전트 루프에 Dribbble 수준의 인터페이스를 얹었습니다.
-            Google Imagen 이 커버를, Gemini 가 구조를 맡고, Supabase Edge Function 이
+            Gemini 3.1 Flash Image 가 커버를, Gemini 2.5 가 구조를 맡고, Supabase Edge Function 이
             API 키를 안전하게 보관합니다.
           </p>
 
@@ -116,10 +116,10 @@ export default function HomePage() {
           </GlassCard>
           <GlassCard interactive>
             <ImageIcon className="h-5 w-5 text-aurora" />
-            <h3 className="mt-5 text-lg font-semibold">나노바나나 우선 생성</h3>
+            <h3 className="mt-5 text-lg font-semibold">나노바나나 차세대 생성</h3>
             <p className="mt-2 text-sm text-muted-foreground">
-              Gemini 2.5 Flash Image(나노바나나)가 기본 생성기, Imagen 4는 폴백으로
-              동작합니다. 드롭다운에서 언제든 교체 가능합니다.
+              Gemini 3.1 Flash Image (preview · 나노바나나 차세대) 로 모든 슬라이드 이미지를
+              하드 핀 한 단일 모델로 생성해 톤·디테일을 균일하게 유지합니다.
             </p>
           </GlassCard>
           <GlassCard interactive>
@@ -157,12 +157,12 @@ export default function HomePage() {
    └── SSE ◀── events ── WSL2 host
                         │
                         ▼
-           ┌──────────────────────┐
-           │ Supabase Edge Fn     │
-           │ llm-proxy (Deno)     │
-           │  ├─ Gemini chat/vis  │
-           │  └─ Imagen T2I       │
-           └──────────────────────┘`}
+           ┌──────────────────────────────┐
+           │ Supabase Edge Functions      │
+           │  ├─ generate (Gemini 2.5)    │
+           │  └─ regenerate-image         │
+           │     └─ Gemini 3.1 Flash Img  │
+           └──────────────────────────────┘`}
               </pre>
             </div>
           </div>
